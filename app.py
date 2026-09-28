@@ -29,7 +29,7 @@ MODELS_FALLBACK = [
     'qwen/qwen3.6-27b'
 ]
 
-# Запасные ответы Кунегунды при ошибках ии
+# Запасные ответы Кунегунды при ошибках ИИ
 FALLBACK_RESPONSES = [
     "хрустальный шар под диван закатился, приди позже, когда вымету пыль.",
     "туман застлал мои очи, свечи погасли, приходи чуть позже.",
@@ -167,19 +167,19 @@ def send_vk_message(peer_id, message_text, reply_to_msg_id=None):
     if reply_to_msg_id:
         params["reply_to"] = reply_to_msg_id
 
-    requests.post(url, data=params)
+    res = requests.post(url, data=params).json()
+    print(f"[LOG] Результат отправки сообщения ВК: {res}")
 
 @app.route('/', methods=['POST'])
 def vk_callback():
     data = request.get_json(force=True)
-
-    if VK_SECRET_KEY and data.get('secret') != VK_SECRET_KEY:
-        return 'bad request', 400
+    print(f"[LOG] Входящий запрос от ВК: {data}")
 
     type_event = data.get('type')
 
     if type_event == 'confirmation':
-        return VK_CONFIRMATION_TOKEN
+        print(f"[LOG] Отправляем подтверждение: {VK_CONFIRMATION_TOKEN}")
+        return str(VK_CONFIRMATION_TOKEN)
 
     elif type_event == 'message_new':
         msg = data.get('object', {}).get('message', {})
