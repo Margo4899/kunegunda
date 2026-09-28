@@ -5,24 +5,27 @@ import threading
 import traceback
 from datetime import datetime
 from flask import Flask, request
-from groq import Groq, GroqError
+from groq import Groq
 from supabase import create_client, Client
 
 app = Flask(__name__)
 
-# --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
+# --- 1. ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 VK_CONFIRMATION_TOKEN = os.environ.get("VK_CONFIRMATION_TOKEN")
 VK_GROUP_TOKEN = os.environ.get("VK_GROUP_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-print("==================== [СТАРТ ПРИЛОЖЕНИЯ] ====================")
+# Явно задаём версию VK API 5.199
+VK_API_VERSION = "5.199"
+
+print("==================== [СТАРТ ПРИЛОЖЕНИЯ 5.199] ====================")
 print(f"🔑 VK_CONFIRMATION_TOKEN: {'Задан' if VK_CONFIRMATION_TOKEN else '❌ НЕ ЗАДАН'}")
 print(f"🔑 VK_GROUP_TOKEN: {'Задан' if VK_GROUP_TOKEN else '❌ НЕ ЗАДАН'}")
 print(f"🔑 GROQ_API_KEY: {'Задан' if GROQ_API_KEY else '❌ НЕ ЗАДАН'}")
 print(f"🔑 SUPABASE_URL: {'Задан' if SUPABASE_URL else '❌ НЕ ЗАДАН'}")
-print("============================================================")
+print("==================================================================")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
@@ -68,6 +71,7 @@ SYSTEM_PROMPT_BASE = """
 4. никакой ненормативной лексики и мата.
 """
 
+# --- 2. ЛИМИТЫ (SUPABASE) ---
 def check_and_update_limit_supabase(user_id):
     if not supabase:
         print("⚠️ [SUPABASE] Клиент Supabase не инициализирован, пропускаем лимит.")
@@ -114,6 +118,7 @@ def check_and_update_limit_supabase(user_id):
         traceback.print_exc()
         return True
 
+# --- 3. ВПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def load_avataria_knowledge():
     file_path = "knowledge.txt"
     if os.path.exists(file_path):
@@ -153,9 +158,14 @@ def generate_ai_response(system_instruction, user_prompt):
     print("⚠️ [GROQ] Ни одна модель не ответила, выдаем случайный фолбэк.")
     return random.choice(FALLBACK_RESPONSES)
 
+# --- 4. ВЗАИМОДЕЙСТВИЕ С VK API 5.199 ---
 def get_vk_user_name(user_id):
     url = "https://api.vk.com/method/users.get"
-    params = {"user_ids": user_id, "access_token": VK_GROUP_TOKEN, "v": "5.131"}
+    params = {
+        "user_ids": user_id, 
+        "access_token": VK_GROUP_TOKEN, 
+        "v": VK_API_VERSION
+    }
     try:
         res = requests.get(url, params=params).json()
         if "response" in res and len(res["response"]) > 0:
@@ -168,7 +178,7 @@ def send_vk_message(peer_id, message_text, reply_to_msg_id=None):
     if not message_text:
         message_text = random.choice(FALLBACK_RESPONSES)
 
-    print(f"📤 [ВК ОТПРАВКА] В peer_id={peer_id}: '{message_text}'")
+    print(f"📤 [ВК 5.199 ОТПРАВКА] В peer_id={peer_id}: '{message_text}'")
 
     url = "https://api.vk.com/method/messages.send"
     params = {
@@ -176,28 +186,33 @@ def send_vk_message(peer_id, message_text, reply_to_msg_id=None):
         "message": message_text,
         "random_id": 0,
         "access_token": VK_GROUP_TOKEN,
-        "v": "5.131"
+        "v": VK_API_VERSION
     }
     if reply_to_msg_id and reply_to_msg_id > 0:
         params["reply_to"] = reply_to_msg_id
 
     try:
         res = requests.post(url, data=params).json()
-        print(f"📬 [ВК ОТВЕТ СЕРВЕРА]: {res}")
+        print(f"📬 [ВК 5.199 ОТВЕТ СЕРВЕРА]: {res}")
     except Exception as e:
         print(f"❌ [ВК КРИТИЧЕСКАЯ ОШИБКА ОТПРАВКИ]: {e}")
 
+# --- 5. ОБРАБОТКА СОБЫТИЙ В ФОНЕ ---
 def process_event_async(data):
     try:
-        print("\n-------------------- [ФОНОВЫЙ ПОТОК СТАРТ] --------------------")
-        msg = data.get('object', {}).get('message', {})
+        print("\n-------------------- [ФОНОВЫЙ ПОТОК СТАРТ (5.199)] --------------------")
+        
+        # В VK API 5.199 структура объекта находится в data['object']['message']
+        obj = data.get('object', {})
+        msg = obj.get('message', obj)
+        
         peer_id = msg.get('peer_id')
         from_id = msg.get('from_id')
         text = msg.get('text', '').strip().lower()
         msg_id = msg.get('id') or msg.get('conversation_message_id')
         action = msg.get('action', {})
 
-        print(f"📩 [ДАННЫЕ] peer_id={peer_id}, from_id={from_id}, msg_id={msg_id}, text='{text}'")
+        print(f"📩 [ДАННЫЕ 5.199] peer_id={peer_id}, from_id={from_id}, msg_id={msg_id}, text='{text}'")
 
         # 1. Приглашение в беседу
         if action.get('type') in ['chat_invite_user', 'chat_invite_user_by_link']:
@@ -259,13 +274,14 @@ def process_event_async(data):
     finally:
         print("-------------------- [ФОНОВЫЙ ПОТОК ЗАВЕРШЕН] --------------------\n")
 
+# --- 6. FLASK И WEBHOOK ---
 @app.route('/', methods=['GET', 'POST'])
 def vk_callback():
     if request.method == 'GET':
         return 'Bot is running alive!', 200
 
     data = request.get_json(force=True, silent=True)
-    print(f"\n📥 [ВХОДЯЩИЙ HTTP POST]: {data}")
+    print(f"\n📥 [ВХОДЯЩИЙ HTTP POST 5.199]: {data}")
 
     if not data:
         print("⚠️ [ВХОДЯЩИЙ HTTP] Данные пустые!")
@@ -278,7 +294,8 @@ def vk_callback():
         return str(VK_CONFIRMATION_TOKEN)
 
     elif type_event == 'message_new':
-        msg = data.get('object', {}).get('message', {})
+        obj = data.get('object', {})
+        msg = obj.get('message', obj)
         msg_id = msg.get('id') or msg.get('conversation_message_id')
 
         if msg_id:
@@ -289,7 +306,7 @@ def vk_callback():
             if len(processed_msg_ids) > 1000:
                 processed_msg_ids.clear()
 
-        print("🚀 [ПОТОК] Запускаем обработку в фоновом режиме...")
+        print("🚀 [ПОТОК] Запускаем обработку события в фоновом режиме...")
         threading.Thread(target=process_event_async, args=(data,)).start()
         return 'ok'
 
