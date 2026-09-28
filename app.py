@@ -130,8 +130,10 @@ def generate_ai_response(system_instruction, user_prompt):
                 max_tokens=300,
             )
             text = response.choices[0].message.content
-            text = text.replace("—", ",").replace("–", ",").replace("«", "").replace("»", "").replace('"', '')
-            return text.lower()
+            if text:
+                text = text.replace("—", ",").replace("–", ",").replace("«", "").replace("»", "").replace('"', '').strip()
+                if text:
+                    return text.lower()
         except GroqError as e:
             print(f"[LOG] ошибка модели {model_name}: {e}, переключаемся...")
             continue
@@ -156,6 +158,9 @@ def get_vk_user_name(user_id):
 
 def send_vk_message(peer_id, message_text, reply_to_msg_id=None):
     """Отправка сообщения в беседу с ответом на конкретное сообщение"""
+    if not message_text or not str(message_text).strip():
+        message_text = random.choice(FALLBACK_RESPONSES)
+
     url = "https://api.vk.com/method/messages.send"
     params = {
         "peer_id": peer_id,
@@ -164,7 +169,7 @@ def send_vk_message(peer_id, message_text, reply_to_msg_id=None):
         "access_token": VK_GROUP_TOKEN,
         "v": "5.131"
     }
-    if reply_to_msg_id:
+    if reply_to_msg_id and reply_to_msg_id > 0:
         params["reply_to"] = reply_to_msg_id
 
     res = requests.post(url, data=params).json()
@@ -186,7 +191,7 @@ def vk_callback():
         peer_id = msg.get('peer_id')
         from_id = msg.get('from_id')
         text = msg.get('text', '').strip().lower()
-        msg_id = msg.get('id')
+        msg_id = msg.get('id', 0)
         action = msg.get('action', {})
 
         # 1. Приглашение в беседу
