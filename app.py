@@ -13,16 +13,17 @@ app = Flask(__name__)
 # --- 1. ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 VK_CONFIRMATION_TOKEN = os.environ.get("VK_CONFIRMATION_TOKEN")
 VK_GROUP_TOKEN = os.environ.get("VK_GROUP_TOKEN")
+VK_SECRET_KEY = os.environ.get("VK_SECRET_KEY", "poop")  # Автоматически учитываем secret: poop
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# Явно задаём версию VK API 5.199
 VK_API_VERSION = "5.199"
 
 print("==================== [СТАРТ ПРИЛОЖЕНИЯ 5.199] ====================")
 print(f"🔑 VK_CONFIRMATION_TOKEN: {'Задан' if VK_CONFIRMATION_TOKEN else '❌ НЕ ЗАДАН'}")
 print(f"🔑 VK_GROUP_TOKEN: {'Задан' if VK_GROUP_TOKEN else '❌ НЕ ЗАДАН'}")
+print(f"🔒 VK_SECRET_KEY: {VK_SECRET_KEY}")
 print(f"🔑 GROQ_API_KEY: {'Задан' if GROQ_API_KEY else '❌ НЕ ЗАДАН'}")
 print(f"🔑 SUPABASE_URL: {'Задан' if SUPABASE_URL else '❌ НЕ ЗАДАН'}")
 print("==================================================================")
@@ -118,7 +119,7 @@ def check_and_update_limit_supabase(user_id):
         traceback.print_exc()
         return True
 
-# --- 3. ВПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# --- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def load_avataria_knowledge():
     file_path = "knowledge.txt"
     if os.path.exists(file_path):
@@ -202,7 +203,6 @@ def process_event_async(data):
     try:
         print("\n-------------------- [ФОНОВЫЙ ПОТОК СТАРТ (5.199)] --------------------")
         
-        # В VK API 5.199 структура объекта находится в data['object']['message']
         obj = data.get('object', {})
         msg = obj.get('message', obj)
         
@@ -285,6 +285,12 @@ def vk_callback():
 
     if not data:
         print("⚠️ [ВХОДЯЩИЙ HTTP] Данные пустые!")
+        return 'ok'
+
+    # Проверяем секретный ключ из ВК
+    secret = data.get('secret')
+    if VK_SECRET_KEY and secret and secret != VK_SECRET_KEY:
+        print(f"⚠️ [БЕЗОПАСНОСТЬ] Неверный secret key: {secret}")
         return 'ok'
 
     type_event = data.get('type')
