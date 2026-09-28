@@ -2,6 +2,7 @@ import os
 import random
 import requests
 import threading
+import traceback
 from datetime import datetime
 from flask import Flask, request
 from groq import Groq, GroqError
@@ -9,22 +10,25 @@ from supabase import create_client, Client
 
 app = Flask(__name__)
 
-# Переменные окружения
+# --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 VK_CONFIRMATION_TOKEN = os.environ.get("VK_CONFIRMATION_TOKEN")
 VK_GROUP_TOKEN = os.environ.get("VK_GROUP_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# Инициализация клиентов API
+print("==================== [СТАРТ ПРИЛОЖЕНИЯ] ====================")
+print(f"🔑 VK_CONFIRMATION_TOKEN: {'Задан' if VK_CONFIRMATION_TOKEN else '❌ НЕ ЗАДАН'}")
+print(f"🔑 VK_GROUP_TOKEN: {'Задан' if VK_GROUP_TOKEN else '❌ НЕ ЗАДАН'}")
+print(f"🔑 GROQ_API_KEY: {'Задан' if GROQ_API_KEY else '❌ НЕ ЗАДАН'}")
+print(f"🔑 SUPABASE_URL: {'Задан' if SUPABASE_URL else '❌ НЕ ЗАДАН'}")
+print("============================================================")
+
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-# Защита от дубликатов сообщений ВК
 processed_msg_ids = set()
 
-# Список моделей с ротацией
 MODELS_FALLBACK = [
     'openai/gpt-oss-120b',
     'openai/gpt-oss-20b',
@@ -66,13 +70,16 @@ SYSTEM_PROMPT_BASE = """
 
 def check_and_update_limit_supabase(user_id):
     if not supabase:
+        print("⚠️ [SUPABASE] Клиент Supabase не инициализирован, пропускаем лимит.")
         return True
     today = datetime.now().strftime("%Y-%m-%d")
     try:
+        print(f"📊 [SUPABASE] Проверка лимита для user_id={user_id}...")
         res = supabase.table("user_limits").select("*").eq("user_id", user_id).execute()
         data = res.data
 
         if not data:
+            print("📊 [SUPABASE] Пользователь новый, создаем запись...")
             supabase.table("user_limits").insert({
                 "user_id": user_id,
                 "count": 1,
@@ -85,6 +92,7 @@ def check_and_update_limit_supabase(user_id):
         count = user_record.get("count", 0)
 
         if last_date != today:
+            print("📊 [SUPABASE] Новый день, сбрасываем лимит...")
             supabase.table("user_limits").update({
                 "count": 1,
                 "last_date": today
@@ -92,15 +100,18 @@ def check_and_update_limit_supabase(user_id):
             return True
 
         if count >= 3:
+            print(f"⚠️ [SUPABASE] Лимит исчерпан для user_id={user_id} (уже {count} гаданий).")
             return False
 
+        print(f"📊 [SUPABASE] Добавляем +1 гадание (было {count})...")
         supabase.table("user_limits").update({
             "count": count + 1
         }).eq("user_id", user_id).execute()
         return True
 
     except Exception as e:
-        print(f"[LOG] Ошибка Supabase: {e}")
+        print(f"❌ [SUPABASE ОШИБКА]: {e}")
+        traceback.print_exc()
         return True
 
 def load_avataria_knowledge():
@@ -114,10 +125,12 @@ def load_avataria_knowledge():
 
 def generate_ai_response(system_instruction, user_prompt):
     if not groq_client:
+        print("⚠️ [GROQ] Ключ GROQ_API_KEY отсутствует, возвращаем фолбэк.")
         return random.choice(FALLBACK_RESPONSES)
 
     for model_name in MODELS_FALLBACK:
         try:
+            print(f"🤖 [GROQ] Запрос к модели {model_name}...")
             response = groq_client.chat.completions.create(
                 model=model_name,
                 messages=[
@@ -131,11 +144,13 @@ def generate_ai_response(system_instruction, user_prompt):
             if text:
                 text = text.replace("—", ",").replace("–", ",").replace("«", "").replace("»", "").replace('"', '').strip()
                 if text:
+                    print(f"✅ [GROQ УСПЕХ ({model_name})]: {text.lower()}")
                     return text.lower()
         except Exception as e:
-            print(f"[LOG] Ошибка модели {model_name}: {e}")
+            print(f"❌ [GROQ ОШИБКА ({model_name})]: {e}")
             continue
 
+    print("⚠️ [GROQ] Ни одна модель не ответила, выдаем случайный фолбэк.")
     return random.choice(FALLBACK_RESPONSES)
 
 def get_vk_user_name(user_id):
@@ -145,13 +160,15 @@ def get_vk_user_name(user_id):
         res = requests.get(url, params=params).json()
         if "response" in res and len(res["response"]) > 0:
             return res["response"][0].get("first_name", "новичок")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ [ВК ОШИБКА ИМЕНИ]: {e}")
     return "новичок"
 
 def send_vk_message(peer_id, message_text, reply_to_msg_id=None):
     if not message_text:
         message_text = random.choice(FALLBACK_RESPONSES)
+
+    print(f"📤 [ВК ОТПРАВКА] В peer_id={peer_id}: '{message_text}'")
 
     url = "https://api.vk.com/method/messages.send"
     params = {
@@ -164,67 +181,83 @@ def send_vk_message(peer_id, message_text, reply_to_msg_id=None):
     if reply_to_msg_id and reply_to_msg_id > 0:
         params["reply_to"] = reply_to_msg_id
 
-    res = requests.post(url, data=params).json()
-    print(f"[LOG] Результат отправки сообщения ВК: {res}")
+    try:
+        res = requests.post(url, data=params).json()
+        print(f"📬 [ВК ОТВЕТ СЕРВЕРА]: {res}")
+    except Exception as e:
+        print(f"❌ [ВК КРИТИЧЕСКАЯ ОШИБКА ОТПРАВКИ]: {e}")
 
 def process_event_async(data):
-    """Фоновая обработка событий без задержки ответа для ВК"""
-    msg = data.get('object', {}).get('message', {})
-    peer_id = msg.get('peer_id')
-    from_id = msg.get('from_id')
-    text = msg.get('text', '').strip().lower()
-    msg_id = msg.get('id') or msg.get('conversation_message_id')
-    action = msg.get('action', {})
+    try:
+        print("\n-------------------- [ФОНОВЫЙ ПОТОК СТАРТ] --------------------")
+        msg = data.get('object', {}).get('message', {})
+        peer_id = msg.get('peer_id')
+        from_id = msg.get('from_id')
+        text = msg.get('text', '').strip().lower()
+        msg_id = msg.get('id') or msg.get('conversation_message_id')
+        action = msg.get('action', {})
 
-    # 1. Приглашение в беседу
-    if action.get('type') in ['chat_invite_user', 'chat_invite_user_by_link']:
-        invited_id = action.get('member_id', 0)
+        print(f"📩 [ДАННЫЕ] peer_id={peer_id}, from_id={from_id}, msg_id={msg_id}, text='{text}'")
 
-        if invited_id < 0:
+        # 1. Приглашение в беседу
+        if action.get('type') in ['chat_invite_user', 'chat_invite_user_by_link']:
+            invited_id = action.get('member_id', 0)
+            print(f"🎉 [СОБЫТИЕ] Добавлен участник: invited_id={invited_id}")
+
+            if invited_id < 0:
+                sys_prompt = SYSTEM_PROMPT_BASE + """
+                расскажи о себе: ты гадалка кунегунда, долго жила в пещерах тропикании, но решила вылезти к людям и помогать им своими магическими силами.
+                объясни, что ты умеешь предсказывать судьбу в аватарии.
+                обязательно напиши подсказку: чтобы получить предсказание, нужно написать команду ".гадать".
+                напомни про ограничение: каждому смертному положено максимум 3 гадания в день.
+                """
+                usr_prompt = "тебя только что добавили в беседу, поприветствуй всех участников и расскажи о себе и своих правилах."
+                reply = generate_ai_response(sys_prompt, usr_prompt)
+                send_vk_message(peer_id, reply)
+                return
+
+            user_name = get_vk_user_name(invited_id)
             sys_prompt = SYSTEM_PROMPT_BASE + """
-            расскажи о себе: ты гадалка кунегунда, долго жила в пещерах тропикании, но решила вылезти к людям и помогать им своими магическими силами.
-            объясни, что ты умеешь предсказывать судьбу в аватарии.
-            обязательно напиши подсказку: чтобы получить предсказание, нужно написать команду ".гадать".
-            напомни про ограничение: каждому смертному положено максимум 3 гадания в день.
+            представься как гадалка кунегунда, назови нового участника по имени и по доброте душевной сделай ему позитивный расклад про эту беседу.
+            строгое ограничение: твой ответ должен состоять максимум из 2 предложений.
+            обращение строго на ты и без указания пола.
             """
-            usr_prompt = "тебя только что добавили в беседу, поприветствуй всех участников и расскажи о себе и своих правилах."
+            usr_prompt = f"в беседу зашел пользователь {user_name}, поприветствуй его и сделай краткий расклад максимум в 2 предложения."
             reply = generate_ai_response(sys_prompt, usr_prompt)
             send_vk_message(peer_id, reply)
             return
 
-        user_name = get_vk_user_name(invited_id)
-        sys_prompt = SYSTEM_PROMPT_BASE + """
-        представься как гадалка кунегунда, назови нового участника по имени и по доброте душевной сделай ему позитивный расклад про эту беседу.
-        строгое ограничение: твой ответ должен состоять максимум из 2 предложений.
-        обращение строго на ты и без указания пола.
-        """
-        usr_prompt = f"в беседу зашел пользователь {user_name}, поприветствуй его и сделай краткий расклад максимум в 2 предложения."
-        reply = generate_ai_response(sys_prompt, usr_prompt)
-        send_vk_message(peer_id, reply)
-        return
+        # 2. Команда ".гадать"
+        if text == ".гадать" or text.startswith(".гадать"):
+            print("🔮 [СОБЫТИЕ] Вызвана команда .гадать!")
+            if not check_and_update_limit_supabase(from_id):
+                limit_reply = random.choice(LIMIT_REACHED_RESPONSES)
+                send_vk_message(peer_id, limit_reply, reply_to_msg_id=msg_id)
+                return
 
-    # 2. Команда ".гадать"
-    if text == ".гадать" or text.startswith(".гадать"):
-        if not check_and_update_limit_supabase(from_id):
-            limit_reply = random.choice(LIMIT_REACHED_RESPONSES)
-            send_vk_message(peer_id, limit_reply, reply_to_msg_id=msg_id)
-            return
+            avataria_knowledge = load_avataria_knowledge()
+            sys_prompt = SYSTEM_PROMPT_BASE + f"""
+            вот полная база знаний и фактов про игру аватария:
+            {avataria_knowledge}
+            
+            твоя задача:
+            1. сама выбери из этого текста абсолютно любой случайный факт или тему про аватарию.
+            2. обыграй выбранный факт с хитринкой, сарказмом и приколом в виде предсказания.
+            3. обязательно сделай так, чтобы было понятно, что события происходят именно в игре аватария.
+            4. ответ должен состоять строго из 2 предложений.
+            5. обращайся к игроку строго на ты, без указания пола.
+            """
+            usr_prompt = "выбери случайный факт из знаний про аватарию и сделай мне предсказание."
+            reply = generate_ai_response(sys_prompt, usr_prompt)
+            send_vk_message(peer_id, reply, reply_to_msg_id=msg_id)
+        else:
+            print(f"ℹ️ [ПРОПУСК] Текст '{text}' не является командой .гадать")
 
-        avataria_knowledge = load_avataria_knowledge()
-        sys_prompt = SYSTEM_PROMPT_BASE + f"""
-        вот полная база знаний и фактов про игру аватария:
-        {avataria_knowledge}
-        
-        твоя задача:
-        1. сама выбери из этого текста абсолютно любой случайный факт или тему про аватарию.
-        2. обыграй выбранный факт с хитринкой, сарказмом и приколом в виде предсказания.
-        3. обязательно сделай так, чтобы было понятно, что события происходят именно в игре аватария.
-        4. ответ должен состоять строго из 2 предложений.
-        5. обращайся к игроку строго на ты, без указания пола.
-        """
-        usr_prompt = "выбери случайный факт из знаний про аватарию и сделай мне предсказание."
-        reply = generate_ai_response(sys_prompt, usr_prompt)
-        send_vk_message(peer_id, reply, reply_to_msg_id=msg_id)
+    except Exception as e:
+        print(f"❌ [КРИТИЧЕСКАЯ ОШИБКА В ПОТОКЕ]: {e}")
+        traceback.print_exc()
+    finally:
+        print("-------------------- [ФОНОВЫЙ ПОТОК ЗАВЕРШЕН] --------------------\n")
 
 @app.route('/', methods=['GET', 'POST'])
 def vk_callback():
@@ -232,27 +265,31 @@ def vk_callback():
         return 'Bot is running alive!', 200
 
     data = request.get_json(force=True, silent=True)
+    print(f"\n📥 [ВХОДЯЩИЙ HTTP POST]: {data}")
+
     if not data:
+        print("⚠️ [ВХОДЯЩИЙ HTTP] Данные пустые!")
         return 'ok'
 
     type_event = data.get('type')
 
     if type_event == 'confirmation':
+        print(f"✅ [CONFIRMATION] Отправляем токен: {VK_CONFIRMATION_TOKEN}")
         return str(VK_CONFIRMATION_TOKEN)
 
     elif type_event == 'message_new':
         msg = data.get('object', {}).get('message', {})
         msg_id = msg.get('id') or msg.get('conversation_message_id')
 
-        # Исключаем дубликаты повторных запросов ВК
         if msg_id:
             if msg_id in processed_msg_ids:
+                print(f"⚠️ [ДУБЛИКАТ] Сообщение msg_id={msg_id} уже обрабатывалось, пропуск.")
                 return 'ok'
             processed_msg_ids.add(msg_id)
             if len(processed_msg_ids) > 1000:
                 processed_msg_ids.clear()
 
-        # Запускаем обработку в фоновом потоке и СРАЗУ отвечаем ВК "ok"
+        print("🚀 [ПОТОК] Запускаем обработку в фоновом режиме...")
         threading.Thread(target=process_event_async, args=(data,)).start()
         return 'ok'
 
