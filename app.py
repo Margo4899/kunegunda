@@ -193,7 +193,7 @@ FORTUNE_MOODS = [
 BAD_CHARS_RE = re.compile(r"[\u0590-\u08ff\u0e00-\u0fff\u1100-\u11ff\u3000-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
-def clean_ai_text(text, max_sentences, max_chars=None):
+def clean_ai_text(text, max_sentences, max_chars=None, finished=False):
     """Чистит ответ модели. Возвращает None, если ответ испорчен и надо спросить другую модель."""
     if not text:
         return None
@@ -211,6 +211,10 @@ def clean_ai_text(text, max_sentences, max_chars=None):
     if len(re.findall(r"[а-яё]", text)) < 0.6 * len(re.findall(r"[a-zа-яё]", text) or [1]):
         print(f"⚠️ [ФИЛЬТР] Ответ не на русском, пробуем другую модель: {text}")
         return None
+
+    # модель сама закончила ответ, но забыла точку в конце: дописываем
+    if finished and text and text[-1] not in ".!?":
+        text += "."
 
     # оставляем только целые предложения, не больше max_sentences
     sentences = re.findall(r"[^.!?]+[.!?]+", text)
@@ -259,7 +263,7 @@ def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_c
                 try:
                     print(f"🤖 [GEMINI] Запрос к модели {model_name} (попытка {attempt + 1})...")
                     raw, finish = ask_gemini(model_name, system_instruction, user_prompt)
-                    text = clean_ai_text(raw, max_sentences, max_chars)
+                    text = clean_ai_text(raw, max_sentences, max_chars, finished=(finish == "STOP"))
                     if text:
                         print(f"✅ [GEMINI УСПЕХ ({model_name})]: {text}")
                         return text
@@ -296,7 +300,7 @@ def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max
                     **extra,
                 )
                 choice = response.choices[0]
-                text = clean_ai_text(choice.message.content, max_sentences, max_chars)
+                text = clean_ai_text(choice.message.content, max_sentences, max_chars, finished=(choice.finish_reason == "stop"))
                 if text:
                     print(f"✅ [GROQ УСПЕХ ({model_name})]: {text}")
                     return text
