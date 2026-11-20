@@ -86,7 +86,7 @@ SYSTEM_PROMPT_BASE = """
 
 строгие правила общения:
 1. всегда обращайся к участнику строго на ты.
-2. никогда не используй прошедшее время для участника (избегай слов типа пошел, пошла, кушала, кушал). обходи род нейтрально, используя будущее время, настоящее время или конструкции без рода.
+2. род: если ниже сказано, парень это или девушка, используй правильный род. если пол неизвестен, обходи род (будущее или настоящее время, без слов вроде пошел или пошла).
 
 строгие правила стиля:
 1. пиши строго с маленькой буквы.
@@ -176,12 +176,19 @@ AVATARIA_FACTS = load_avataria_facts()
 recent_facts_by_user = {}
 recent_facts_global = []
 
+# Свежие новинки (разделы с этими словами в названии) выпадают примерно в половине гаданий
+NEW_SECTION_WORDS = ("новинки", "мини-игры и их билеты", "праздники, ярмарка", "локации и интересные")
+NEW_FACT_CHANCE = 0.5
+
 def pick_fact(user_id):
     """Случайный факт, который этот игрок недавно не получал и который не выпадал в последних гаданиях."""
     seen = recent_facts_by_user.setdefault(user_id, [])
     n = len(AVATARIA_FACTS)
     blocked = set(seen) | set(recent_facts_global)
     choices = [i for i in range(n) if i not in blocked] or [i for i in range(n) if i not in seen] or list(range(n))
+    fresh = [i for i in choices if any(w in AVATARIA_FACTS[i][0].lower() for w in NEW_SECTION_WORDS)]
+    if fresh and random.random() < NEW_FACT_CHANCE:
+        choices = fresh
     i = random.choice(choices)
     seen.append(i)
     del seen[:-min(20, n - 1 if n > 1 else 1)]
@@ -350,22 +357,72 @@ def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max
     return random.choice(FALLBACK_RESPONSES)
 
 # --- 4. ВЗАИМОДЕЙСТВИЕ С VK API 5.199 ---
-def get_vk_user_name(user_id):
-    url = "https://api.vk.com/method/users.get"
-    params = {
-        "user_ids": user_id, 
-        "access_token": VK_GROUP_TOKEN, 
-        "v": VK_API_VERSION
-    }
+_user_cache = {}
+
+def get_vk_user(user_id):
+    """Имя и пол из профиля ВК: (имя, 'f' / 'm' / None). Пол ВК: 1 женский, 2 мужской, 0 не указан."""
+    if user_id in _user_cache:
+        return _user_cache[user_id]
+    name, sex = None, None
     try:
-        res = requests.get(url, params=params, timeout=15).json()
-        if "response" in res and len(res["response"]) > 0:
-            return res["response"][0].get("first_name", "новичок")
+        res = requests.get("https://api.vk.com/method/users.get", params={
+            "user_ids": user_id, "fields": "sex",
+            "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
+        }, timeout=15).json()
+        if res.get("response"):
+            u = res["response"][0]
+            name = u.get("first_name") or None
+            sex = {1: "f", 2: "m"}.get(u.get("sex"))
+        elif "error" in res:
+            print(f"⚠️ [ВК ОШИБКА ИМЕНИ]: {res['error'].get('error_msg')}")
     except Exception as e:
         print(f"⚠️ [ВК ОШИБКА ИМЕНИ]: {e}")
-    return "новичок"
+    _user_cache[user_id] = (name, sex)
+    return name, sex
+
+def get_vk_user_name(user_id):
+    return get_vk_user(user_id)[0] or "новичок"
+
+def person_rule(name, sex):
+    """Кусок инструкции для модели: как обращаться к человеку."""
+    parts = []
+    if name:
+        parts.append(f"собеседника зовут {name}. обратись по имени, естественно, один раз.")
+    if sex == "f":
+        parts.append("это девушка, пиши о ней в женском роде.")
+    elif sex == "m":
+        parts.append("это парень, пиши о нем в мужском роде.")
+    else:
+        parts.append("пол неизвестен, обходи род, без слов вроде пошел или пошла.")
+    return " ".join(parts)
+
+THINKING_PHRASES = [
+    "🔮 {name}смотрю в шар, погоди минутку...",
+    "🔮 {name}тасую карты, не торопи судьбу...",
+    "🔮 {name}шар мутнеет, сейчас прояснится...",
+    "🔮 {name}зажигаю свечи, духи уже шепчутся...",
+    "🔮 {name}раскладываю карты, не дыши...",
+]
+
+def edit_vk_message(peer_id, cmid, message_text):
+    """Заменяет текст уже отправленного сообщения. Возвращает True, если получилось."""
+    try:
+        res = requests.post("https://api.vk.com/method/messages.edit", data={
+            "peer_id": peer_id, "conversation_message_id": cmid,
+            "message": message_text, "keep_forward_messages": 1,
+            "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
+        }, timeout=40).json()
+        if "error" in res:
+            print(f"⚠️ [ВК] Не удалось заменить сообщение: {res['error'].get('error_msg')}")
+            return False
+        print(f"✏️ [ВК] Сообщение {cmid} заменено на предсказание")
+        return True
+    except Exception as e:
+        print(f"⚠️ [ВК] Не удалось заменить сообщение: {e}")
+        return False
 
 def send_vk_message(peer_id, message_text, reply_to_cmid=None):
+    """Отправляет сообщение. Возвращает conversation_message_id отправленного сообщения (или None)."""
     if not message_text:
         message_text = random.choice(FALLBACK_RESPONSES)
 
@@ -376,7 +433,7 @@ def send_vk_message(peer_id, message_text, reply_to_cmid=None):
     print(f"📤 [ВК ОТПРАВКА] В peer_id={peer_id}: '{message_text}'")
 
     params = {
-        "peer_id": peer_id,
+        "peer_ids": peer_id,  # с peer_ids ВК возвращает conversation_message_id, чтобы потом заменить текст
         "message": message_text,
         "random_id": random.randint(1, 2**31 - 1),
         "access_token": VK_GROUP_TOKEN,
@@ -398,10 +455,14 @@ def send_vk_message(peer_id, message_text, reply_to_cmid=None):
             res = requests.post("https://api.vk.com/method/messages.send", data=params, timeout=40).json()
         if "error" in res:
             print(f"❌ [ВК ОШИБКА ОТПРАВКИ] код {res['error'].get('error_code')}: {res['error'].get('error_msg')}")
-        else:
-            print(f"📬 [ВК] Отправлено: {res}")
+            return None
+        print(f"📬 [ВК] Отправлено: {res}")
+        resp = res.get("response")
+        if isinstance(resp, list) and resp:
+            return resp[0].get("conversation_message_id")
     except Exception as e:
         print(f"❌ [ВК КРИТИЧЕСКАЯ ОШИБКА ОТПРАВКИ]: {e}")
+    return None
 
 def is_fortune_command(text):
     """Команда срабатывает на: гадать, .гадать, /гадать, !гадать, а также с упоминанием бота."""
@@ -442,16 +503,17 @@ def process_event_async(data):
                 send_vk_message(peer_id, reply)
                 return
 
-            user_name = get_vk_user_name(invited_id)
+            user_name, user_sex = get_vk_user(invited_id)
+            user_name = user_name or "новичок"
             tone = pick_tone()
             print(f"🎭 [ТОН ПРИВЕТСТВИЯ] {tone}")
             sys_prompt = SYSTEM_PROMPT_BASE + f"""
             представься как гадалка кунегунда, назови нового участника по имени и сделай ему позитивный расклад про эту беседу.
             говори {tone}.
             строгое ограничение: твой ответ должен состоять максимум из 2 предложений.
-            обращение строго на ты и без указания пола.
+            обращение строго на ты. {person_rule(user_name, user_sex)}
             """
-            usr_prompt = f"в беседу зашел пользователь {user_name}, поприветствуй его и сделай краткий расклад максимум в 2 предложения."
+            usr_prompt = f"в беседу пришел новый участник по имени {user_name}, поприветствуй и сделай краткий расклад максимум в 2 предложения."
             reply = generate_ai_response(sys_prompt, usr_prompt)
             send_vk_message(peer_id, reply)
             return
@@ -463,6 +525,11 @@ def process_event_async(data):
                 limit_reply = random.choice(LIMIT_REACHED_RESPONSES)
                 send_vk_message(peer_id, limit_reply, reply_to_cmid=cmid)
                 return
+
+            name, sex = get_vk_user(from_id)
+            print(f"👤 [ИГРОК] {name or 'имя неизвестно'}, пол: {sex or 'неизвестен'}")
+            thinking = random.choice(THINKING_PHRASES).format(name=f"{name}, " if name else "")
+            placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
 
             topic, fact = pick_fact(from_id)
             mood = random.choice(FORTUNE_MOODS)
@@ -489,11 +556,12 @@ def process_event_async(data):
             3. говори {tone}.
             4. не больше {max_sent} коротких предложений, всего не больше {max_words} слов.
             5. смысл должен быть понятен с первого прочтения, без нагромождений.
-            6. обращайся на ты, без указания пола.{lore_rule}
+            6. обращайся на ты. {person_rule(name, sex)}{lore_rule}
             """
             usr_prompt = "погадай мне."
             reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=max_sent, max_chars=max_len)
-            send_vk_message(peer_id, reply, reply_to_cmid=cmid)
+            if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, reply)):
+                send_vk_message(peer_id, reply, reply_to_cmid=cmid)
         else:
             print(f"ℹ️ [ПРОПУСК] Текст '{text}' не является командой гадать")
 
