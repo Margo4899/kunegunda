@@ -177,7 +177,7 @@ recent_facts_by_user = {}
 recent_facts_global = []
 
 # Свежие новинки (разделы с этими словами в названии) выпадают примерно в половине гаданий
-NEW_SECTION_WORDS = ("новинки", "мини-игры и их билеты", "праздники, ярмарка", "локации и интересные", "творчество игроков")
+NEW_SECTION_WORDS = ("новинки", "мини-игры и их билеты", "праздники, ярмарка", "локации и интересные", "творчество игроков", "игровые боты")
 NEW_FACT_CHANCE = 0.5
 
 def pick_fact(user_id):
@@ -207,6 +207,16 @@ FORTUNE_MOODS = [
     "что-то про дружбу или нового друга в игре",
     "приятную находку или выгоду",
 ]
+
+# Игровые боты для шуточных «шипов»
+GAME_NPCS = [
+    "бот-диджей из клуба", "суровый охранник у VIP-входа в клубе", "официантка из кафе",
+    "официантка из клуба", "бот-повар из кулинарии", "болтливый бот из салона красоты",
+    "Алиса из зоомагазина", "вечный приятель Саша", "вечная приятельница Маша",
+    "Жабулька", "пират Джон Крюк", "пиратка Мэри Рид", "лемур из VIP-комнаты",
+]
+NPC_SHIP_CHANCE = 0.12    # в гадании: шуточный роман с игровым ботом
+NPC_PAIR_CHANCE = 0.15    # в паре дня: вместо участника беседы выпадает игровой бот
 
 # Каким тоном говорит Кунегунда (выбирается случайно, чтобы она не была все время одинаковой)
 FORTUNE_TONES = [
@@ -635,8 +645,12 @@ def handle_love(peer_id, from_id, cmid):
     thinking = random.choice(LOVE_THINKING).format(name=f"{who_tag}, " if name else "")
     placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
 
-    pid, pname, plast, psex = random.choice(members)
-    psex = resolve_sex(pname, psex)
+    npc = random.choice(GAME_NPCS) if random.random() < NPC_PAIR_CHANCE else None
+    if npc:
+        pid, pname, plast, psex = None, npc, None, None
+    else:
+        pid, pname, plast, psex = random.choice(members)
+        psex = resolve_sex(pname, psex)
     topic, fact = random.choice(love_facts())
     tone = pick_tone()
     print(f"💘 [ПАРА ДНЯ] {name} + {pname} | факт: {fact} | тон: {tone}")
@@ -645,7 +659,7 @@ def handle_love(peer_id, from_id, cmid):
         return {"m": f"{n} (парень)", "f": f"{n} (девушка)"}.get(sx, f"{n} (пол неизвестен, обходи род)")
 
     sys_prompt = SYSTEM_PROMPT_BASE + f"""
-            ты определяешь пару дня в беседе: {who(name or 'игрок', sex)} и {who(pname or 'участник', psex)}.
+            ты определяешь пару дня в беседе: {who(name or 'игрок', sex)} и {pname + ' (это игровой бот аватарии, сделай шуточный шип)' if npc else who(pname or 'участник', psex)}.
             напиши милое романтическое предсказание для этой пары в игре аватария, связанное с этим фактом:
             тема: {topic}
             факт: {fact}
@@ -659,7 +673,8 @@ def handle_love(peer_id, from_id, cmid):
             """
     reply = generate_ai_response(sys_prompt, "найди нам пару дня.", max_sentences=2, max_chars=300,
                                  names=(name, last_name, pname, plast))
-    text = f"💘 пара дня: {mention(from_id, name or 'ты')} + {mention(pid, pname or 'кто-то')}\n{reply}"
+    partner_tag = pname if npc else mention(pid, pname or 'кто-то')
+    text = f"💘 пара дня: {mention(from_id, name or 'ты')} + {partner_tag}\n{reply}"
     if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, text)):
         send_vk_message(peer_id, text, reply_to_cmid=cmid)
 
@@ -738,6 +753,9 @@ def process_event_async(data):
 
             topic, fact = pick_fact(from_id)
             mood = random.choice(FORTUNE_MOODS)
+            if random.random() < NPC_SHIP_CHANCE:
+                npc = random.choice(GAME_NPCS)
+                mood = f"шуточный роман (шип) с игровым ботом: {npc}. по-доброму и смешно, связав это с фактом"
             tone = pick_tone()
             lore = random.choice(KUNEGUNDA_LORE) if KUNEGUNDA_LORE and random.random() < LORE_CHANCE else None
             print(f"📚 [ФАКТ] {topic}: {fact}")
@@ -761,7 +779,8 @@ def process_event_async(data):
             3. говори {tone}.
             4. не больше {max_sent} коротких предложений, всего не больше {max_words} слов.
             5. смысл должен быть понятен с первого прочтения, без нагромождений.
-            5а. это предсказание о будущем: не утверждай, что игрок уже что-то сделал. не придумывай нелепых деталей, которых нет в факте (никаких салатов, отверток и т.п.).
+            5а. сегодня {datetime.now().strftime("%d.%m.%Y")}. если факт про акцию, праздник или событие, которое уже прошло (ярмарка, хэллоуин, день семьи, пятница 13, весенний пруд, золотая осень и т.п.), гадай про следующее такое же событие: например после 10-й ярмарки будет 11-я, после прошлого хэллоуина будет следующий. предположи, что там будет похожее, как опытная гадалка.
+            5б. это предсказание о будущем: не утверждай, что игрок уже что-то сделал. не придумывай нелепых деталей, которых нет в факте (никаких салатов, отверток и т.п.).
             6. обращайся на ты. {person_rule(name, sex, last_name)}{lore_rule}
             """
             usr_prompt = "погадай мне."
