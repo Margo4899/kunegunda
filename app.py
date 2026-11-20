@@ -74,7 +74,8 @@ LIMIT_REACHED_RESPONSES = [
 SYSTEM_PROMPT_BASE = """
 ты гадалка кунегунда, древняя и опытная предсказательница.
 твой характер: саркастичная, язвительная, любишь подкалывать и издеваться, но в глубине души добрая.
-обрати внимание: ты любишь время от времени вворачивать древние и устаревшие словечки (например: ибо, кабы, зело, очи, перст, зрить, уповать, паче, суженый, ведать).
+говоришь простым живым современным языком, как опытная гадалка с чувством юмора.
+иногда, примерно в каждом втором ответе, можешь вставить одно старинное словечко (например: ибо, зело, очи, ведать), но не больше одного на ответ и только если оно звучит естественно.
 
 строгие правила общения:
 1. всегда обращайся к участнику строго на ты.
@@ -83,7 +84,7 @@ SYSTEM_PROMPT_BASE = """
 строгие правила стиля:
 1. пиши строго с маленькой буквы.
 2. никогда не используй тире (—) и кавычки («» или "").
-3. используй только запятые и обычные точки.
+3. используй только запятые и обычные точки, без точки с запятой.
 4. никакой ненормативной лексики и мата.
 """
 
@@ -135,20 +136,62 @@ def check_and_update_limit_supabase(user_id):
         return True
 
 # --- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-def load_avataria_knowledge():
-    file_path = "knowledge.txt"
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-            if content:
-                return content
-    return "в аватарии есть питомцы, золото, серебро, бои подушками, свадьбы, сквер и вип статус."
+def load_avataria_facts():
+    """Разбивает knowledge.txt на отдельные факты: (тема раздела, текст факта)."""
+    facts = []
+    section = "аватария"
+    current = None
+    try:
+        with open("knowledge.txt", "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.rstrip()
+                if line.startswith("## "):
+                    section = re.sub(r"^##\s*\d*\.?\s*", "", line).strip()
+                    current = None
+                elif line.startswith("- "):
+                    current = [section, line[2:].strip()]
+                    facts.append(current)
+                elif line.startswith("  ") and current and line.strip():
+                    current[1] += " " + line.strip()
+                else:
+                    current = None
+    except FileNotFoundError:
+        pass
+    if not facts:
+        facts = [["аватария", "в аватарии есть питомцы, золото, серебро, бои подушками, свадьбы, сквер и вип статус."]]
+    print(f"📚 [ЗНАНИЯ] Загружено фактов про аватарию: {len(facts)}")
+    return facts
+
+AVATARIA_FACTS = load_avataria_facts()
+recent_facts_by_user = {}
+recent_facts_global = []
+
+def pick_fact(user_id):
+    """Случайный факт, который этот игрок недавно не получал и который не выпадал в последних гаданиях."""
+    seen = recent_facts_by_user.setdefault(user_id, [])
+    n = len(AVATARIA_FACTS)
+    blocked = set(seen) | set(recent_facts_global)
+    choices = [i for i in range(n) if i not in blocked] or [i for i in range(n) if i not in seen] or list(range(n))
+    i = random.choice(choices)
+    seen.append(i)
+    del seen[:-min(20, n - 1 if n > 1 else 1)]
+    recent_facts_global.append(i)
+    del recent_facts_global[:-min(5, n - 1 if n > 1 else 1)]
+    return AVATARIA_FACTS[i]
+
+FORTUNE_MOODS = [
+    "удачу и приятный сюрприз",
+    "мелкую неприятность с ироничным советом, как ее пережить",
+    "смешное предупреждение",
+    "неожиданный поворот",
+    "совет, что сделать сегодня в игре",
+]
 
 # Символы, которых не должно быть в ответе: китайские, японские, корейские иероглифы и т.п.
 BAD_CHARS_RE = re.compile(r"[\u0590-\u08ff\u0e00-\u0fff\u1100-\u11ff\u3000-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
-def clean_ai_text(text, max_sentences):
+def clean_ai_text(text, max_sentences, max_chars=None):
     """Чистит ответ модели. Возвращает None, если ответ испорчен и надо спросить другую модель."""
     if not text:
         return None
@@ -158,6 +201,7 @@ def clean_ai_text(text, max_sentences):
     text = re.sub(r"\s+", " ", text).strip().lower()
     text = re.sub(r"\s+([,.!?])", r"\1", text)
     text = re.sub(r",+", ",", text)
+    text = text.replace(";", ".")
 
     if BAD_CHARS_RE.search(text):
         print(f"⚠️ [ФИЛЬТР] В ответе иероглифы, пробуем другую модель: {text}")
@@ -174,9 +218,12 @@ def clean_ai_text(text, max_sentences):
     text = " ".join(x.strip() for x in sentences[:max_sentences])
     if len(text) < 15:
         return None
+    if max_chars and len(text) > max_chars:
+        print(f"⚠️ [ФИЛЬТР] Ответ слишком длинный ({len(text)} символов), просим заново: {text}")
+        return None
     return text
 
-def generate_ai_response(system_instruction, user_prompt, max_sentences=2):
+def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_chars=None):
     if not groq_client:
         print("⚠️ [GROQ] Ключ GROQ_API_KEY отсутствует, возвращаем фолбэк.")
         return random.choice(FALLBACK_RESPONSES)
@@ -184,7 +231,7 @@ def generate_ai_response(system_instruction, user_prompt, max_sentences=2):
     system_instruction += "\nотвечай только на русском языке, без иностранных слов и иероглифов. не используй markdown, звездочки и списки."
 
     for model_name in MODELS_FALLBACK:
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 print(f"🤖 [GROQ] Запрос к модели {model_name} (попытка {attempt + 1})...")
                 extra = {}
@@ -198,12 +245,12 @@ def generate_ai_response(system_instruction, user_prompt, max_sentences=2):
                         {"role": "system", "content": system_instruction},
                         {"role": "user", "content": user_prompt}
                     ],
-                    temperature=0.8,
+                    temperature=0.9,
                     max_tokens=1500,  # с запасом: модели gpt-oss тратят часть токенов на раздумья
                     **extra,
                 )
                 choice = response.choices[0]
-                text = clean_ai_text(choice.message.content, max_sentences)
+                text = clean_ai_text(choice.message.content, max_sentences, max_chars)
                 if text:
                     print(f"✅ [GROQ УСПЕХ ({model_name})]: {text}")
                     return text
@@ -327,20 +374,24 @@ def process_event_async(data):
                 send_vk_message(peer_id, limit_reply, reply_to_cmid=cmid)
                 return
 
-            avataria_knowledge = load_avataria_knowledge()
+            topic, fact = pick_fact(from_id)
+            mood = random.choice(FORTUNE_MOODS)
+            print(f"📚 [ФАКТ] {topic}: {fact}")
             sys_prompt = SYSTEM_PROMPT_BASE + f"""
-            вот полная база знаний и фактов про игру аватария:
-            {avataria_knowledge}
-            
-            твоя задача:
-            1. сама выбери из этого текста абсолютно любой случайный факт или тему про аватарию.
-            2. обыграй выбранный факт с хитринкой, сарказмом и приколом в виде предсказания.
-            3. обязательно сделай так, чтобы было понятно, что события происходят именно в игре аватария.
-            4. ответ должен состоять строго из 2 предложений.
-            5. обращайся к игроку строго на ты, без указания пола.
+            предсказание делается про игру аватария, строго про одну тему:
+            тема: {topic}
+            факт: {fact}
+
+            как писать предсказание:
+            1. только про этот факт. не упоминай другие вещи из игры, не придумывай новые предметы.
+            2. предскажи {mood}.
+            3. одно или два коротких предложения, всего не больше 25 слов.
+            4. смысл должен быть понятен с первого прочтения, без нагромождений.
+            5. с легкой иронией или подколом, но по-доброму.
+            6. обращайся на ты, без указания пола.
             """
-            usr_prompt = "выбери случайный факт из знаний про аватарию и сделай мне предсказание."
-            reply = generate_ai_response(sys_prompt, usr_prompt)
+            usr_prompt = "погадай мне."
+            reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=2, max_chars=220)
             send_vk_message(peer_id, reply, reply_to_cmid=cmid)
         else:
             print(f"ℹ️ [ПРОПУСК] Текст '{text}' не является командой гадать")
