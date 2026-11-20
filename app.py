@@ -451,6 +451,22 @@ def restore_name_case(raw, text, names):
             text = re.sub(rf"(?<![а-яёa-z]){re.escape(n.lower())}(?![а-яёa-z])", n, text)
     return text
 
+def mention(user_id, text):
+    """Отметка человека синей ссылкой: [id123|Данил]."""
+    return f"[id{user_id}|{text}]"
+
+def tag_person(reply, user_id, names):
+    """Делает первое обращение к человеку в ответе отметкой (синей ссылкой).
+    Ищет имя или его форму (Данил, Данечка...), если не нашла, ставит отметку в начало."""
+    if not user_id or not reply:
+        return reply
+    stems = {n.strip().lower()[:3] for n in names if n and len(n.strip()) >= 3}
+    for m in re.finditer(r"[А-ЯЁA-Z][а-яёa-z]+", reply):
+        if m.group(0).lower()[:3] in stems:
+            return reply[:m.start()] + mention(user_id, m.group(0)) + reply[m.end():]
+    first = next((n for n in names if n), None)
+    return f"{mention(user_id, first)}, {reply}" if first else reply
+
 THINKING_PHRASES = [
     "🔮 {name}смотрю в шар, погоди минутку...",
     "🔮 {name}тасую карты, не торопи судьбу...",
@@ -545,10 +561,37 @@ LOVE_THINKING = [
     "💘 {name}шар розовеет, сейчас увижу твою пару дня...",
 ]
 
+# Готовые ответы на повторную попытку найти пару в тот же день (нейросеть не тратим)
 LOVE_USED_REPLIES = [
-    "{name}, твою пару на сегодня я уже нашла, второй раз судьба не повторяет. приходи завтра.",
-    "{name}, сердце дважды в день не гадают, завтра посмотрю снова.",
+    "{name}, что, сегодняшняя пара не понравилась? купидон уже ушел домой, приходи завтра.",
+    "{name}, второй раз за день любовь не раздаю, а то сердце треснет, как зеркало в Зазеркалье.",
+    "{name}, попугай Фантик говорит, что ты жадничаешь. одна пара в день, остальное завтра.",
+    "{name}, шар покраснел от смущения и отказывается показывать вторую пару. жди утра.",
+    "{name}, судьба не автомат с конфетами, дважды не крутится. завтра попробуем снова.",
+    "{name}, я тебе уже нашла половинку, а ты уже ищешь третинку? приходи завтра.",
+    "{name}, у купидона закончились стрелы, он пошел их точить до завтра.",
+    "{name}, ох уж эта любвеобильность. карты на сегодня закрыты, приходи завтра.",
+    "{name}, даже на свадебной локации столько не женятся. одна пара в день, ни одной больше.",
+    "{name}, свечи на любовь уже догорели, новые зажгу только завтра.",
 ]
+
+def check_and_mark_love(user_id):
+    """True, если сегодня пару еще не искали (и сразу отмечаем). Хранится в Supabase, таблица love_limits.
+    Действует на всех, даже на тестовых, чтобы было видно смешной ответ на повтор."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if supabase:
+        try:
+            res = supabase.table("love_limits").select("*").eq("user_id", user_id).execute()
+            if res.data and str(res.data[0].get("last_date")) == today:
+                return False
+            supabase.table("love_limits").upsert({"user_id": user_id, "last_date": today}).execute()
+            return True
+        except Exception as e:
+            print(f"⚠️ [SUPABASE] love_limits недоступна, считаю в памяти: {e}")
+    if love_used.get(user_id) == today:
+        return False
+    love_used[user_id] = today
+    return True
 
 def get_chat_members(peer_id):
     """Люди в беседе: [(id, имя, фамилия, пол)]. Нужно, чтобы бот был админом беседы."""
@@ -573,10 +616,7 @@ def get_chat_members(peer_id):
 def handle_love(peer_id, from_id, cmid):
     name, profile_sex, last_name = get_vk_user_full(from_id)
     sex = resolve_sex(name, profile_sex)
-    today = datetime.now().strftime("%Y-%m-%d")
-    if str(from_id) not in LIMIT_EXEMPT_IDS and love_used.get(from_id) == today:
-        send_vk_message(peer_id, random.choice(LOVE_USED_REPLIES).format(name=name or "дорогуша"), reply_to_cmid=cmid)
-        return
+    who_tag = mention(from_id, name) if name else "дорогуша"
 
     if peer_id < 2000000000:
         send_vk_message(peer_id, "пару дня я ищу только в беседе, позови меня туда, где есть из кого выбирать.", reply_to_cmid=cmid)
@@ -584,15 +624,19 @@ def handle_love(peer_id, from_id, cmid):
 
     members = [m for m in get_chat_members(peer_id) if m[0] != from_id]
     if not members:
-        send_vk_message(peer_id, f"{name or 'дорогуша'}, шар не видит, кто здесь есть. сделайте меня админом беседы, и я найду пару.", reply_to_cmid=cmid)
+        send_vk_message(peer_id, f"{who_tag}, шар не видит, кто здесь есть. сделайте меня админом беседы, и я найду пару.", reply_to_cmid=cmid)
         return
 
-    thinking = random.choice(LOVE_THINKING).format(name=f"{name}, " if name else "")
+    if not check_and_mark_love(from_id):
+        print(f"💘 [ПАРА ДНЯ] {name} уже искал(а) пару сегодня, отвечаю заготовкой")
+        send_vk_message(peer_id, random.choice(LOVE_USED_REPLIES).format(name=who_tag), reply_to_cmid=cmid)
+        return
+
+    thinking = random.choice(LOVE_THINKING).format(name=f"{who_tag}, " if name else "")
     placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
 
     pid, pname, plast, psex = random.choice(members)
     psex = resolve_sex(pname, psex)
-    love_used[from_id] = today
     topic, fact = random.choice(love_facts())
     tone = pick_tone()
     print(f"💘 [ПАРА ДНЯ] {name} + {pname} | факт: {fact} | тон: {tone}")
@@ -615,9 +659,7 @@ def handle_love(peer_id, from_id, cmid):
             """
     reply = generate_ai_response(sys_prompt, "найди нам пару дня.", max_sentences=2, max_chars=300,
                                  names=(name, last_name, pname, plast))
-    tag1 = f"[id{from_id}|{name or 'ты'}]"
-    tag2 = f"[id{pid}|{pname or 'кто-то'}]"
-    text = f"💘 пара дня: {tag1} + {tag2}\n{reply}"
+    text = f"💘 пара дня: {mention(from_id, name or 'ты')} + {mention(pid, pname or 'кто-то')}\n{reply}"
     if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, text)):
         send_vk_message(peer_id, text, reply_to_cmid=cmid)
 
@@ -667,6 +709,7 @@ def process_event_async(data):
             """
             usr_prompt = f"в беседу пришел новый участник по имени {user_name}, поприветствуй и сделай краткий расклад максимум в 2 предложения."
             reply = generate_ai_response(sys_prompt, usr_prompt, names=(user_name, user_last))
+            reply = tag_person(reply, invited_id, (user_name, user_last))
             send_vk_message(peer_id, reply)
             return
 
@@ -680,14 +723,17 @@ def process_event_async(data):
         if is_fortune_command(text):
             print("🔮 [СОБЫТИЕ] Вызвана команда гадать!")
             if not check_and_update_limit_supabase(from_id):
+                lname = get_vk_user_full(from_id)[0]
                 limit_reply = random.choice(LIMIT_REACHED_RESPONSES)
+                if lname:
+                    limit_reply = f"{mention(from_id, lname)}, {limit_reply}"
                 send_vk_message(peer_id, limit_reply, reply_to_cmid=cmid)
                 return
 
             name, profile_sex, last_name = get_vk_user_full(from_id)
             sex = resolve_sex(name, profile_sex)
             print(f"👤 [ИГРОК] {name or 'имя неизвестно'}, пол: {sex or 'неизвестен'}")
-            thinking = random.choice(THINKING_PHRASES).format(name=f"{name}, " if name else "")
+            thinking = random.choice(THINKING_PHRASES).format(name=f"{mention(from_id, name)}, " if name else "")
             placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
 
             topic, fact = pick_fact(from_id)
@@ -720,6 +766,7 @@ def process_event_async(data):
             """
             usr_prompt = "погадай мне."
             reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=max_sent, max_chars=max_len, names=(name, last_name))
+            reply = tag_person(reply, from_id, (name, last_name))
             if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, reply)):
                 send_vk_message(peer_id, reply, reply_to_cmid=cmid)
         else:
