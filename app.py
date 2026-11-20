@@ -28,6 +28,9 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 VK_API_VERSION = "5.199"
+# На время тестов: у этих людей (VK id через запятую) нет лимита гаданий.
+# Чтобы вернуть лимит, задайте на Render переменную LIMIT_EXEMPT_IDS пустой или уберите id отсюда.
+LIMIT_EXEMPT_IDS = {x.strip() for x in os.environ.get("LIMIT_EXEMPT_IDS", "691070777").split(",") if x.strip()}
 VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "241804933")
 SELF_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://kunegunda.onrender.com")
 
@@ -92,6 +95,9 @@ SYSTEM_PROMPT_BASE = """
 
 # --- 2. ЛИМИТЫ (SUPABASE) ---
 def check_and_update_limit_supabase(user_id):
+    if str(user_id) in LIMIT_EXEMPT_IDS:
+        print(f"🧪 [ТЕСТ] Лимит для user_id={user_id} отключен (LIMIT_EXEMPT_IDS).")
+        return True
     if not supabase:
         print("⚠️ [SUPABASE] Клиент Supabase не инициализирован, пропускаем лимит.")
         return True
