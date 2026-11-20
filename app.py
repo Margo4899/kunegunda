@@ -144,34 +144,75 @@ def load_avataria_knowledge():
                 return content
     return "в аватарии есть питомцы, золото, серебро, бои подушками, свадьбы, сквер и вип статус."
 
-def generate_ai_response(system_instruction, user_prompt):
+# Символы, которых не должно быть в ответе: китайские, японские, корейские иероглифы и т.п.
+BAD_CHARS_RE = re.compile(r"[\u0590-\u08ff\u0e00-\u0fff\u1100-\u11ff\u3000-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
+THINK_RE = re.compile(r"<think>.*?</think>", re.S)
+
+def clean_ai_text(text, max_sentences):
+    """Чистит ответ модели. Возвращает None, если ответ испорчен и надо спросить другую модель."""
+    if not text:
+        return None
+    text = THINK_RE.sub("", text)
+    text = re.sub(r"[*_#`>]", "", text)  # markdown
+    text = text.replace("—", ",").replace("–", ",").replace("«", "").replace("»", "").replace('"', "").replace("“", "").replace("”", "")
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    text = re.sub(r"\s+([,.!?])", r"\1", text)
+    text = re.sub(r",+", ",", text)
+
+    if BAD_CHARS_RE.search(text):
+        print(f"⚠️ [ФИЛЬТР] В ответе иероглифы, пробуем другую модель: {text}")
+        return None
+    if len(re.findall(r"[а-яё]", text)) < 0.6 * len(re.findall(r"[a-zа-яё]", text) or [1]):
+        print(f"⚠️ [ФИЛЬТР] Ответ не на русском, пробуем другую модель: {text}")
+        return None
+
+    # оставляем только целые предложения, не больше max_sentences
+    sentences = re.findall(r"[^.!?]+[.!?]+", text)
+    if not sentences:
+        print(f"⚠️ [ФИЛЬТР] Ответ оборван, пробуем другую модель: {text}")
+        return None
+    text = " ".join(x.strip() for x in sentences[:max_sentences])
+    if len(text) < 15:
+        return None
+    return text
+
+def generate_ai_response(system_instruction, user_prompt, max_sentences=2):
     if not groq_client:
         print("⚠️ [GROQ] Ключ GROQ_API_KEY отсутствует, возвращаем фолбэк.")
         return random.choice(FALLBACK_RESPONSES)
 
-    for model_name in MODELS_FALLBACK:
-        try:
-            print(f"🤖 [GROQ] Запрос к модели {model_name}...")
-            response = groq_client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.9,
-                max_tokens=300,
-            )
-            text = response.choices[0].message.content
-            if text:
-                text = text.replace("—", ",").replace("–", ",").replace("«", "").replace("»", "").replace('"', '').strip()
-                if text:
-                    print(f"✅ [GROQ УСПЕХ ({model_name})]: {text.lower()}")
-                    return text.lower()
-        except Exception as e:
-            print(f"❌ [GROQ ОШИБКА ({model_name})]: {e}")
-            continue
+    system_instruction += "\nотвечай только на русском языке, без иностранных слов и иероглифов. не используй markdown, звездочки и списки."
 
-    print("⚠️ [GROQ] Ни одна модель не ответила, выдаем случайный фолбэк.")
+    for model_name in MODELS_FALLBACK:
+        for attempt in range(2):
+            try:
+                print(f"🤖 [GROQ] Запрос к модели {model_name} (попытка {attempt + 1})...")
+                extra = {}
+                if model_name.startswith("openai/gpt-oss"):
+                    extra["reasoning_effort"] = "low"   # меньше «раздумий», меньше обрывов
+                elif model_name.startswith("qwen/"):
+                    extra["reasoning_format"] = "hidden"
+                response = groq_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.8,
+                    max_tokens=1500,  # с запасом: модели gpt-oss тратят часть токенов на раздумья
+                    **extra,
+                )
+                choice = response.choices[0]
+                text = clean_ai_text(choice.message.content, max_sentences)
+                if text:
+                    print(f"✅ [GROQ УСПЕХ ({model_name})]: {text}")
+                    return text
+                print(f"⚠️ [GROQ] Плохой ответ от {model_name} (finish_reason={choice.finish_reason})")
+            except Exception as e:
+                print(f"❌ [GROQ ОШИБКА ({model_name})]: {e}")
+                break  # модель недоступна, переходим к следующей
+
+    print("⚠️ [GROQ] Ни одна модель не дала нормальный ответ, выдаем случайный фолбэк.")
     return random.choice(FALLBACK_RESPONSES)
 
 # --- 4. ВЗАИМОДЕЙСТВИЕ С VK API 5.199 ---
@@ -216,11 +257,11 @@ def send_vk_message(peer_id, message_text, reply_to_cmid=None):
         })
 
     try:
-        res = requests.post("https://api.vk.com/method/messages.send", data=params, timeout=15).json()
+        res = requests.post("https://api.vk.com/method/messages.send", data=params, timeout=40).json()
         if "error" in res and reply_to_cmid:
             print(f"⚠️ [ВК] Ответ с цитатой не прошёл ({res['error'].get('error_msg')}), шлём без цитаты")
             params.pop("forward", None)
-            res = requests.post("https://api.vk.com/method/messages.send", data=params, timeout=15).json()
+            res = requests.post("https://api.vk.com/method/messages.send", data=params, timeout=40).json()
         if "error" in res:
             print(f"❌ [ВК ОШИБКА ОТПРАВКИ] код {res['error'].get('error_code')}: {res['error'].get('error_msg')}")
         else:
@@ -262,8 +303,8 @@ def process_event_async(data):
                 обязательно напиши подсказку: чтобы получить предсказание, нужно написать слово гадать.
                 напомни про ограничение: каждому смертному положено максимум 3 гадания в день.
                 """
-                usr_prompt = "тебя только что добавили в беседу, поприветствуй всех участников и расскажи о себе и своих правилах."
-                reply = generate_ai_response(sys_prompt, usr_prompt)
+                usr_prompt = "тебя только что добавили в беседу, поприветствуй всех участников и расскажи о себе и своих правилах. уложись в 4 предложения."
+                reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=5)
                 send_vk_message(peer_id, reply)
                 return
 
