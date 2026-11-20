@@ -23,6 +23,7 @@ VK_CONFIRMATION_TOKEN = os.environ.get("VK_CONFIRMATION_TOKEN")
 VK_GROUP_TOKEN = os.environ.get("VK_GROUP_TOKEN")
 VK_SECRET_KEY = os.environ.get("VK_SECRET_KEY", "poop")  # Автоматически учитываем secret: poop
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
@@ -34,6 +35,7 @@ print("==================== [СТАРТ КУНЕГУНДЫ] ====================
 print(f"🔑 VK_CONFIRMATION_TOKEN: {'Задан' if VK_CONFIRMATION_TOKEN else '❌ НЕ ЗАДАН'}")
 print(f"🔑 VK_GROUP_TOKEN: {'Задан' if VK_GROUP_TOKEN else '❌ НЕ ЗАДАН'}")
 print(f"🔒 VK_SECRET_KEY: {'Задан' if VK_SECRET_KEY else 'не задан'}")
+print(f"🔑 GEMINI_API_KEY: {'Задан' if GEMINI_API_KEY else '❌ НЕ ЗАДАН (будет использоваться только Groq)'}")
 print(f"🔑 GROQ_API_KEY: {'Задан' if GROQ_API_KEY else '❌ НЕ ЗАДАН'}")
 print(f"🔑 SUPABASE_URL: {'Задан' if SUPABASE_URL else '❌ НЕ ЗАДАН'}")
 print("==================================================================")
@@ -223,12 +225,55 @@ def clean_ai_text(text, max_sentences, max_chars=None):
         return None
     return text
 
+GEMINI_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.1-flash-lite",
+]
+
+def ask_gemini(model_name, system_instruction, user_prompt):
+    """Запрос к Google Gemini (бесплатный уровень). Возвращает текст или бросает исключение."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+    body = {
+        "systemInstruction": {"parts": [{"text": system_instruction}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": {"temperature": 0.9, "maxOutputTokens": 2048},
+    }
+    r = requests.post(url, json=body, headers={"x-goog-api-key": GEMINI_API_KEY}, timeout=40)
+    data = r.json()
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {data.get('error', {}).get('message', data)}")
+    cand = (data.get("candidates") or [{}])[0]
+    parts = cand.get("content", {}).get("parts", [])
+    text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    return text, cand.get("finishReason")
+
 def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_chars=None):
+    system_instruction += "\nотвечай только на русском языке, без иностранных слов и иероглифов. не используй markdown, звездочки и списки."
+
+    # 1. Сначала Gemini: лучше всех пишет по-русски
+    if GEMINI_API_KEY:
+        for model_name in GEMINI_MODELS:
+            for attempt in range(3):
+                try:
+                    print(f"🤖 [GEMINI] Запрос к модели {model_name} (попытка {attempt + 1})...")
+                    raw, finish = ask_gemini(model_name, system_instruction, user_prompt)
+                    text = clean_ai_text(raw, max_sentences, max_chars)
+                    if text:
+                        print(f"✅ [GEMINI УСПЕХ ({model_name})]: {text}")
+                        return text
+                    print(f"⚠️ [GEMINI] Плохой ответ от {model_name} (finish={finish})")
+                except Exception as e:
+                    print(f"❌ [GEMINI ОШИБКА ({model_name})]: {e}")
+                    break
+
+    # 2. Запасной вариант: Groq
+    return generate_groq_response(system_instruction, user_prompt, max_sentences, max_chars)
+
+def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max_chars=None):
     if not groq_client:
         print("⚠️ [GROQ] Ключ GROQ_API_KEY отсутствует, возвращаем фолбэк.")
         return random.choice(FALLBACK_RESPONSES)
-
-    system_instruction += "\nотвечай только на русском языке, без иностранных слов и иероглифов. не используй markdown, звездочки и списки."
 
     for model_name in MODELS_FALLBACK:
         for attempt in range(3):

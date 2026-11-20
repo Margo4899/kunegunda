@@ -18,7 +18,8 @@
   - `VK_GROUP_ID` — id сообщества (по умолчанию 241804933)
   - `VK_CONFIRMATION_TOKEN` (только для Callback API, сейчас не обязателен) — строка, которую должен вернуть сервер (из настроек Callback API)
   - `VK_SECRET_KEY` — секретный ключ из настроек Callback API
-  - `GROQ_API_KEY`
+  - `GEMINI_API_KEY` — ключ Google Gemini (основная модель, бесплатно: aistudio.google.com → Get API key)
+  - `GROQ_API_KEY` — запасная модель
   - `SUPABASE_URL`, `SUPABASE_KEY`
 
 Токены нельзя писать в код: репозиторий публичный.
