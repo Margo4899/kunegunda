@@ -586,8 +586,10 @@ LOVE_USED_REPLIES = [
 ]
 
 def check_and_mark_love(user_id):
-    """True, если сегодня пару еще не искали (и сразу отмечаем). Хранится в Supabase, таблица love_limits.
-    Действует на всех, даже на тестовых, чтобы было видно смешной ответ на повтор."""
+    """True, если сегодня пару еще не искали (и сразу отмечаем). Хранится в Supabase, таблица love_limits."""
+    if str(user_id) in LIMIT_EXEMPT_IDS:
+        print(f"🧪 [ТЕСТ] Лимит пары дня для user_id={user_id} отключен (LIMIT_EXEMPT_IDS).")
+        return True
     today = datetime.now().strftime("%Y-%m-%d")
     if supabase:
         try:
