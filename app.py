@@ -237,8 +237,9 @@ def pick_tone():
 BAD_CHARS_RE = re.compile(r"[\u0590-\u08ff\u0e00-\u0fff\u1100-\u11ff\u3000-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
-def clean_ai_text(text, max_sentences, max_chars=None, finished=False):
+def clean_ai_text(text, max_sentences, max_chars=None, finished=False, names=()):
     """Чистит ответ модели. Возвращает None, если ответ испорчен и надо спросить другую модель."""
+    raw_original = text or ""
     if not text:
         return None
     text = THINK_RE.sub("", text)
@@ -271,7 +272,7 @@ def clean_ai_text(text, max_sentences, max_chars=None, finished=False):
     if max_chars and len(text) > max_chars:
         print(f"⚠️ [ФИЛЬТР] Ответ слишком длинный ({len(text)} символов), просим заново: {text}")
         return None
-    return text
+    return restore_name_case(raw_original, text, names)
 
 # Бесплатный уровень: 3.5/3.1 Flash Lite по 500 запросов в день, 3.8 Flash только 20 в день
 GEMINI_MODELS = [
@@ -297,7 +298,7 @@ def ask_gemini(model_name, system_instruction, user_prompt):
     text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
     return text, cand.get("finishReason")
 
-def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_chars=None):
+def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_chars=None, names=()):
     system_instruction += "\nотвечай только на русском языке, без иностранных слов и иероглифов. не используй markdown, звездочки и списки."
 
     # 1. Сначала Gemini: лучше всех пишет по-русски
@@ -307,7 +308,7 @@ def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_c
                 try:
                     print(f"🤖 [GEMINI] Запрос к модели {model_name} (попытка {attempt + 1})...")
                     raw, finish = ask_gemini(model_name, system_instruction, user_prompt)
-                    text = clean_ai_text(raw, max_sentences, max_chars, finished=(finish == "STOP"))
+                    text = clean_ai_text(raw, max_sentences, max_chars, finished=(finish == "STOP"), names=names)
                     if text:
                         print(f"✅ [GEMINI УСПЕХ ({model_name})]: {text}")
                         return text
@@ -317,9 +318,9 @@ def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_c
                     break
 
     # 2. Запасной вариант: Groq
-    return generate_groq_response(system_instruction, user_prompt, max_sentences, max_chars)
+    return generate_groq_response(system_instruction, user_prompt, max_sentences, max_chars, names)
 
-def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max_chars=None):
+def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max_chars=None, names=()):
     if not groq_client:
         print("⚠️ [GROQ] Ключ GROQ_API_KEY отсутствует, возвращаем фолбэк.")
         return random.choice(FALLBACK_RESPONSES)
@@ -344,7 +345,7 @@ def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max
                     **extra,
                 )
                 choice = response.choices[0]
-                text = clean_ai_text(choice.message.content, max_sentences, max_chars, finished=(choice.finish_reason == "stop"))
+                text = clean_ai_text(choice.message.content, max_sentences, max_chars, finished=(choice.finish_reason == "stop"), names=names)
                 if text:
                     print(f"✅ [GROQ УСПЕХ ({model_name})]: {text}")
                     return text
@@ -361,9 +362,16 @@ _user_cache = {}
 
 def get_vk_user(user_id):
     """Имя и пол из профиля ВК: (имя, 'f' / 'm' / None). Пол ВК: 1 женский, 2 мужской, 0 не указан."""
+    return get_vk_user_full(user_id)[:2]
+
+def get_vk_last_name(user_id):
+    return get_vk_user_full(user_id)[2]
+
+def get_vk_user_full(user_id):
+    """(имя, пол, фамилия) из профиля ВК, с кэшем."""
     if user_id in _user_cache:
         return _user_cache[user_id]
-    name, sex = None, None
+    name, sex, last = None, None, None
     try:
         res = requests.get("https://api.vk.com/method/users.get", params={
             "user_ids": user_id, "fields": "sex",
@@ -372,22 +380,28 @@ def get_vk_user(user_id):
         if res.get("response"):
             u = res["response"][0]
             name = u.get("first_name") or None
+            last = u.get("last_name") or None
             sex = {1: "f", 2: "m"}.get(u.get("sex"))
         elif "error" in res:
             print(f"⚠️ [ВК ОШИБКА ИМЕНИ]: {res['error'].get('error_msg')}")
     except Exception as e:
         print(f"⚠️ [ВК ОШИБКА ИМЕНИ]: {e}")
-    _user_cache[user_id] = (name, sex)
-    return name, sex
+    _user_cache[user_id] = (name, sex, last)
+    return name, sex, last
 
 def get_vk_user_name(user_id):
     return get_vk_user(user_id)[0] or "новичок"
 
-def person_rule(name, sex):
+NAME_PLAY_CHANCE = 0.35  # примерно в каждом третьем ответе Кунегунда играет с именем или фамилией
+
+def person_rule(name, sex, last_name=None, allow_play=True):
     """Кусок инструкции для модели: как обращаться к человеку."""
     parts = []
     if name:
-        parts.append(f"собеседника зовут {name}. обратись по имени, естественно, один раз.")
+        parts.append(f"собеседника зовут {name}. начни ответ с обращения по имени, имя пиши с большой буквы.")
+        if allow_play and random.random() < NAME_PLAY_CHANCE:
+            joke_last = f" или беззлобно пошути над фамилией {last_name}, если она смешная" if last_name else ""
+            parts.append(f"в этот раз поиграй с именем: ласково или забавно переделай его (например данил, данечка, данилушка){joke_last}. только по-доброму, без обид. если имя похоже на ник, а не на настоящее имя, используй его как есть.")
     if sex == "f":
         parts.append("это девушка, пиши о ней в женском роде.")
     elif sex == "m":
@@ -395,6 +409,19 @@ def person_rule(name, sex):
     else:
         parts.append("пол неизвестен, обходи род, без слов вроде пошел или пошла.")
     return " ".join(parts)
+
+def restore_name_case(raw, text, names):
+    """Все пишется с маленькой буквы, но имена (и формы вроде Данечка) возвращаем с большой."""
+    stems = {n.strip().lower()[:3] for n in names if n and len(n.strip()) >= 3}
+    if not stems:
+        return text
+    for word in set(re.findall(r"[А-ЯЁA-Z][а-яёa-z]+", raw or "")):
+        if word.lower()[:3] in stems:
+            text = re.sub(rf"(?<![а-яёa-z]){re.escape(word.lower())}(?![а-яёa-z])", word, text)
+    for n in names:
+        if n:
+            text = re.sub(rf"(?<![а-яёa-z]){re.escape(n.lower())}(?![а-яёa-z])", n, text)
+    return text
 
 THINKING_PHRASES = [
     "🔮 {name}смотрю в шар, погоди минутку...",
@@ -503,7 +530,7 @@ def process_event_async(data):
                 send_vk_message(peer_id, reply)
                 return
 
-            user_name, user_sex = get_vk_user(invited_id)
+            user_name, user_sex, user_last = get_vk_user_full(invited_id)
             user_name = user_name or "новичок"
             tone = pick_tone()
             print(f"🎭 [ТОН ПРИВЕТСТВИЯ] {tone}")
@@ -511,10 +538,10 @@ def process_event_async(data):
             представься как гадалка кунегунда, назови нового участника по имени и сделай ему позитивный расклад про эту беседу.
             говори {tone}.
             строгое ограничение: твой ответ должен состоять максимум из 2 предложений.
-            обращение строго на ты. {person_rule(user_name, user_sex)}
+            обращение строго на ты. {person_rule(user_name, user_sex, user_last)}
             """
             usr_prompt = f"в беседу пришел новый участник по имени {user_name}, поприветствуй и сделай краткий расклад максимум в 2 предложения."
-            reply = generate_ai_response(sys_prompt, usr_prompt)
+            reply = generate_ai_response(sys_prompt, usr_prompt, names=(user_name, user_last))
             send_vk_message(peer_id, reply)
             return
 
@@ -526,7 +553,7 @@ def process_event_async(data):
                 send_vk_message(peer_id, limit_reply, reply_to_cmid=cmid)
                 return
 
-            name, sex = get_vk_user(from_id)
+            name, sex, last_name = get_vk_user_full(from_id)
             print(f"👤 [ИГРОК] {name or 'имя неизвестно'}, пол: {sex or 'неизвестен'}")
             thinking = random.choice(THINKING_PHRASES).format(name=f"{name}, " if name else "")
             placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
@@ -556,10 +583,10 @@ def process_event_async(data):
             3. говори {tone}.
             4. не больше {max_sent} коротких предложений, всего не больше {max_words} слов.
             5. смысл должен быть понятен с первого прочтения, без нагромождений.
-            6. обращайся на ты. {person_rule(name, sex)}{lore_rule}
+            6. обращайся на ты. {person_rule(name, sex, last_name)}{lore_rule}
             """
             usr_prompt = "погадай мне."
-            reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=max_sent, max_chars=max_len)
+            reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=max_sent, max_chars=max_len, names=(name, last_name))
             if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, reply)):
                 send_vk_message(peer_id, reply, reply_to_cmid=cmid)
         else:
