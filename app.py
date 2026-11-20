@@ -394,6 +394,34 @@ def get_vk_user_name(user_id):
 
 NAME_PLAY_CHANCE = 0.35  # примерно в каждом третьем ответе Кунегунда играет с именем или фамилией
 
+# Мужские имена на -а/-я и неоднозначные имена (по ним пол не определить)
+MALE_A_NAMES = {"никита", "илья", "кузьма", "фома", "лука", "данила", "савва", "миша", "гоша", "паша", "дима",
+    "ваня", "коля", "петя", "вова", "лёша", "леша", "гриша", "серёжа", "сережа", "толя", "витя", "федя",
+    "костя", "юра", "рома", "тёма", "тема", "яша", "боря", "лёва", "лева", "стёпа", "степа", "жора", "миня",
+    "вася", "гена", "дениска", "данечка", "андрюша", "алёша", "алеша", "матвейка", "ильюша", "антоша", "гоша"}
+NEUTRAL_NAMES = {"саша", "женя", "валя", "слава", "шура", "саня", "сашка", "женька", "мишель", "любовь"}
+
+def sex_from_name(name):
+    """'m' / 'f' / None по имени. None, если имя неоднозначное или похоже на ник."""
+    if not name:
+        return None
+    n = name.strip().lower()
+    if not re.fullmatch(r"[а-яё]+(-[а-яё]+)?", n):
+        return None  # ник на латинице, с цифрами и т.п.
+    if n in NEUTRAL_NAMES:
+        return None
+    if n in MALE_A_NAMES:
+        return "m"
+    if n[-1] in "ая":
+        return "f"
+    if n[-1] in "бвгдзйклмнпрстфхцчшщ":
+        return "m"
+    return None
+
+def resolve_sex(name, profile_sex):
+    """Сначала пол по имени (как в нике), если не понятно, то из профиля ВК."""
+    return sex_from_name(name) or profile_sex
+
 def person_rule(name, sex, last_name=None, allow_play=True):
     """Кусок инструкции для модели: как обращаться к человеку."""
     parts = []
@@ -497,6 +525,102 @@ def is_fortune_command(text):
     t = t.strip(" ,.!/")
     return t == "гадать" or t.startswith("гадать ")
 
+LOVE_WORDS = ("суженый", "суженая", "суженного", "суженую")
+
+def is_love_command(text):
+    """Пара дня: срабатывает на слова суженый / суженая (можно с точкой, ! и упоминанием бота)."""
+    t = re.sub(r"\[(club|public)\d+\|[^\]]*\]", "", text).strip(" ,.!/?")
+    return t in LOVE_WORDS or any(t.startswith(w + " ") for w in LOVE_WORDS)
+
+love_used = {}  # user_id -> дата, когда уже искали пару (раз в день)
+
+LOVE_KEYWORDS = ("свад", "отношен", "влюб", "любв", "любов", "сердц", "супруг", "семь", "романт", "пар", "танц", "подар", "приятел", "друз")
+
+def love_facts():
+    return [f for f in AVATARIA_FACTS if any(k in (f[0] + " " + f[1]).lower() for k in LOVE_KEYWORDS)] or AVATARIA_FACTS
+
+LOVE_THINKING = [
+    "💘 {name}смотрю, чье сердце сегодня бьется в такт с твоим...",
+    "💘 {name}раскладываю карты на любовь, не подглядывай...",
+    "💘 {name}шар розовеет, сейчас увижу твою пару дня...",
+]
+
+LOVE_USED_REPLIES = [
+    "{name}, твою пару на сегодня я уже нашла, второй раз судьба не повторяет. приходи завтра.",
+    "{name}, сердце дважды в день не гадают, завтра посмотрю снова.",
+]
+
+def get_chat_members(peer_id):
+    """Люди в беседе: [(id, имя, фамилия, пол)]. Нужно, чтобы бот был админом беседы."""
+    try:
+        res = requests.post("https://api.vk.com/method/messages.getConversationMembers", data={
+            "peer_id": peer_id, "fields": "sex",
+            "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
+        }, timeout=20).json()
+        if "error" in res:
+            print(f"⚠️ [ВК] Не удалось получить участников беседы: {res['error'].get('error_msg')}")
+            return []
+        out = []
+        for p in res["response"].get("profiles", []):
+            if p.get("deactivated"):
+                continue
+            out.append((p["id"], p.get("first_name"), p.get("last_name"), {1: "f", 2: "m"}.get(p.get("sex"))))
+        return out
+    except Exception as e:
+        print(f"⚠️ [ВК] Ошибка участников беседы: {e}")
+        return []
+
+def handle_love(peer_id, from_id, cmid):
+    name, profile_sex, last_name = get_vk_user_full(from_id)
+    sex = resolve_sex(name, profile_sex)
+    today = datetime.now().strftime("%Y-%m-%d")
+    if str(from_id) not in LIMIT_EXEMPT_IDS and love_used.get(from_id) == today:
+        send_vk_message(peer_id, random.choice(LOVE_USED_REPLIES).format(name=name or "дорогуша"), reply_to_cmid=cmid)
+        return
+
+    if peer_id < 2000000000:
+        send_vk_message(peer_id, "пару дня я ищу только в беседе, позови меня туда, где есть из кого выбирать.", reply_to_cmid=cmid)
+        return
+
+    members = [m for m in get_chat_members(peer_id) if m[0] != from_id]
+    if not members:
+        send_vk_message(peer_id, f"{name or 'дорогуша'}, шар не видит, кто здесь есть. сделайте меня админом беседы, и я найду пару.", reply_to_cmid=cmid)
+        return
+
+    thinking = random.choice(LOVE_THINKING).format(name=f"{name}, " if name else "")
+    placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
+
+    pid, pname, plast, psex = random.choice(members)
+    psex = resolve_sex(pname, psex)
+    love_used[from_id] = today
+    topic, fact = random.choice(love_facts())
+    tone = pick_tone()
+    print(f"💘 [ПАРА ДНЯ] {name} + {pname} | факт: {fact} | тон: {tone}")
+
+    def who(n, sx):
+        return {"m": f"{n} (парень)", "f": f"{n} (девушка)"}.get(sx, f"{n} (пол неизвестен, обходи род)")
+
+    sys_prompt = SYSTEM_PROMPT_BASE + f"""
+            ты определяешь пару дня в беседе: {who(name or 'игрок', sex)} и {who(pname or 'участник', psex)}.
+            напиши милое романтическое предсказание для этой пары в игре аватария, связанное с этим фактом:
+            тема: {topic}
+            факт: {fact}
+
+            правила:
+            1. упомяни оба имени, имена пиши с большой буквы.
+            2. только невинная романтика в игре: симпатия, прогулка, танец, подарок, свидание в игре, игровая свадьба. ничего взрослого.
+            3. говори {tone}, с легким юмором, по-доброму, никого не высмеивай.
+            4. не больше 2 коротких предложений, не больше 35 слов.
+            5. это предсказание о будущем, не придумывай нелепых деталей.
+            """
+    reply = generate_ai_response(sys_prompt, "найди нам пару дня.", max_sentences=2, max_chars=300,
+                                 names=(name, last_name, pname, plast))
+    tag1 = f"[id{from_id}|{name or 'ты'}]"
+    tag2 = f"[id{pid}|{pname or 'кто-то'}]"
+    text = f"💘 пара дня: {tag1} + {tag2}\n{reply}"
+    if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, text)):
+        send_vk_message(peer_id, text, reply_to_cmid=cmid)
+
 # --- 5. ОБРАБОТКА СОБЫТИЙ В ФОНЕ ---
 def process_event_async(data):
     try:
@@ -522,15 +646,16 @@ def process_event_async(data):
                 sys_prompt = SYSTEM_PROMPT_BASE + """
                 расскажи о себе: ты гадалка кунегунда, долго жила в пещерах тропикании, но решила вылезти к людям и помогать им своими магическими силами.
                 объясни, что ты умеешь предсказывать судьбу в аватарии.
-                обязательно напиши подсказку: чтобы получить предсказание, нужно написать слово гадать.
-                напомни про ограничение: каждому смертному положено максимум 3 гадания в день.
+                обязательно напиши подсказку: чтобы получить предсказание, нужно написать слово гадать, максимум 3 гадания в день.
+                еще подскажи: раз в день можно написать слово суженый или суженая, и ты найдешь в беседе пару дня.
                 """
-                usr_prompt = "тебя только что добавили в беседу, поприветствуй всех участников и расскажи о себе и своих правилах. уложись в 4 предложения."
-                reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=5)
+                usr_prompt = "тебя только что добавили в беседу, поприветствуй всех участников и расскажи о себе и своих правилах. уложись в 5 предложений."
+                reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=6)
                 send_vk_message(peer_id, reply)
                 return
 
             user_name, user_sex, user_last = get_vk_user_full(invited_id)
+            user_sex = resolve_sex(user_name, user_sex)
             user_name = user_name or "новичок"
             tone = pick_tone()
             print(f"🎭 [ТОН ПРИВЕТСТВИЯ] {tone}")
@@ -545,7 +670,13 @@ def process_event_async(data):
             send_vk_message(peer_id, reply)
             return
 
-        # 2. Команда ".гадать"
+        # 2. Пара дня
+        if is_love_command(text):
+            print("💘 [СОБЫТИЕ] Ищем пару дня!")
+            handle_love(peer_id, from_id, cmid)
+            return
+
+        # 3. Команда "гадать"
         if is_fortune_command(text):
             print("🔮 [СОБЫТИЕ] Вызвана команда гадать!")
             if not check_and_update_limit_supabase(from_id):
@@ -553,7 +684,8 @@ def process_event_async(data):
                 send_vk_message(peer_id, limit_reply, reply_to_cmid=cmid)
                 return
 
-            name, sex, last_name = get_vk_user_full(from_id)
+            name, profile_sex, last_name = get_vk_user_full(from_id)
+            sex = resolve_sex(name, profile_sex)
             print(f"👤 [ИГРОК] {name or 'имя неизвестно'}, пол: {sex or 'неизвестен'}")
             thinking = random.choice(THINKING_PHRASES).format(name=f"{name}, " if name else "")
             placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
@@ -583,6 +715,7 @@ def process_event_async(data):
             3. говори {tone}.
             4. не больше {max_sent} коротких предложений, всего не больше {max_words} слов.
             5. смысл должен быть понятен с первого прочтения, без нагромождений.
+            5а. это предсказание о будущем: не утверждай, что игрок уже что-то сделал. не придумывай нелепых деталей, которых нет в факте (никаких салатов, отверток и т.п.).
             6. обращайся на ты. {person_rule(name, sex, last_name)}{lore_rule}
             """
             usr_prompt = "погадай мне."
