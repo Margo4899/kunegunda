@@ -1,4 +1,6 @@
 import os
+import json
+import re
 import random
 import requests
 import threading
@@ -20,16 +22,21 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 VK_API_VERSION = "5.199"
 
-print("==================== [СТАРТ ПРИЛОЖЕНИЯ 5.199] ====================")
+print("==================== [СТАРТ КУНЕГУНДЫ] ====================")
 print(f"🔑 VK_CONFIRMATION_TOKEN: {'Задан' if VK_CONFIRMATION_TOKEN else '❌ НЕ ЗАДАН'}")
 print(f"🔑 VK_GROUP_TOKEN: {'Задан' if VK_GROUP_TOKEN else '❌ НЕ ЗАДАН'}")
-print(f"🔒 VK_SECRET_KEY: {VK_SECRET_KEY}")
+print(f"🔒 VK_SECRET_KEY: {'Задан' if VK_SECRET_KEY else 'не задан'}")
 print(f"🔑 GROQ_API_KEY: {'Задан' if GROQ_API_KEY else '❌ НЕ ЗАДАН'}")
 print(f"🔑 SUPABASE_URL: {'Задан' if SUPABASE_URL else '❌ НЕ ЗАДАН'}")
 print("==================================================================")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        print(f"❌ [SUPABASE] Не удалось подключиться, лимиты отключены: {e}")
 
 processed_msg_ids = set()
 
@@ -168,40 +175,61 @@ def get_vk_user_name(user_id):
         "v": VK_API_VERSION
     }
     try:
-        res = requests.get(url, params=params).json()
+        res = requests.get(url, params=params, timeout=15).json()
         if "response" in res and len(res["response"]) > 0:
             return res["response"][0].get("first_name", "новичок")
     except Exception as e:
         print(f"⚠️ [ВК ОШИБКА ИМЕНИ]: {e}")
     return "новичок"
 
-def send_vk_message(peer_id, message_text, reply_to_msg_id=None):
+def send_vk_message(peer_id, message_text, reply_to_cmid=None):
     if not message_text:
         message_text = random.choice(FALLBACK_RESPONSES)
 
-    print(f"📤 [ВК 5.199 ОТПРАВКА] В peer_id={peer_id}: '{message_text}'")
+    if not VK_GROUP_TOKEN:
+        print("❌ [ВК] VK_GROUP_TOKEN не задан на Render, отправить сообщение невозможно!")
+        return
 
-    url = "https://api.vk.com/method/messages.send"
+    print(f"📤 [ВК ОТПРАВКА] В peer_id={peer_id}: '{message_text}'")
+
     params = {
         "peer_id": peer_id,
         "message": message_text,
-        "random_id": 0,
+        "random_id": random.randint(1, 2**31 - 1),
         "access_token": VK_GROUP_TOKEN,
         "v": VK_API_VERSION
     }
-    if reply_to_msg_id and reply_to_msg_id > 0:
-        params["reply_to"] = reply_to_msg_id
+    # В беседах reply_to не работает для сообществ, ответ делается через forward
+    if reply_to_cmid:
+        params["forward"] = json.dumps({
+            "peer_id": peer_id,
+            "conversation_message_ids": [reply_to_cmid],
+            "is_reply": 1
+        })
 
     try:
-        res = requests.post(url, data=params).json()
-        print(f"📬 [ВК 5.199 ОТВЕТ СЕРВЕРА]: {res}")
+        res = requests.post("https://api.vk.com/method/messages.send", data=params, timeout=15).json()
+        if "error" in res and reply_to_cmid:
+            print(f"⚠️ [ВК] Ответ с цитатой не прошёл ({res['error'].get('error_msg')}), шлём без цитаты")
+            params.pop("forward", None)
+            res = requests.post("https://api.vk.com/method/messages.send", data=params, timeout=15).json()
+        if "error" in res:
+            print(f"❌ [ВК ОШИБКА ОТПРАВКИ] код {res['error'].get('error_code')}: {res['error'].get('error_msg')}")
+        else:
+            print(f"📬 [ВК] Отправлено: {res}")
     except Exception as e:
         print(f"❌ [ВК КРИТИЧЕСКАЯ ОШИБКА ОТПРАВКИ]: {e}")
+
+def is_fortune_command(text):
+    """Команда срабатывает на: гадать, .гадать, /гадать, !гадать, а также с упоминанием бота."""
+    t = re.sub(r"\[(club|public)\d+\|[^\]]*\]", "", text)  # убираем упоминание [club123|кунегунда]
+    t = t.strip(" ,.!/")
+    return t == "гадать" or t.startswith("гадать ")
 
 # --- 5. ОБРАБОТКА СОБЫТИЙ В ФОНЕ ---
 def process_event_async(data):
     try:
-        print("\n-------------------- [ФОНОВЫЙ ПОТОК СТАРТ (5.199)] --------------------")
+        print("\n-------------------- [ФОНОВЫЙ ПОТОК СТАРТ] --------------------")
         
         obj = data.get('object', {})
         msg = obj.get('message', obj)
@@ -209,10 +237,10 @@ def process_event_async(data):
         peer_id = msg.get('peer_id')
         from_id = msg.get('from_id')
         text = msg.get('text', '').strip().lower()
-        msg_id = msg.get('id') or msg.get('conversation_message_id')
-        action = msg.get('action', {})
+        cmid = msg.get('conversation_message_id')
+        action = msg.get('action') or {}
 
-        print(f"📩 [ДАННЫЕ 5.199] peer_id={peer_id}, from_id={from_id}, msg_id={msg_id}, text='{text}'")
+        print(f"📩 [ДАННЫЕ] peer_id={peer_id}, from_id={from_id}, cmid={cmid}, text='{text}'")
 
         # 1. Приглашение в беседу
         if action.get('type') in ['chat_invite_user', 'chat_invite_user_by_link']:
@@ -223,7 +251,7 @@ def process_event_async(data):
                 sys_prompt = SYSTEM_PROMPT_BASE + """
                 расскажи о себе: ты гадалка кунегунда, долго жила в пещерах тропикании, но решила вылезти к людям и помогать им своими магическими силами.
                 объясни, что ты умеешь предсказывать судьбу в аватарии.
-                обязательно напиши подсказку: чтобы получить предсказание, нужно написать команду ".гадать".
+                обязательно напиши подсказку: чтобы получить предсказание, нужно написать слово гадать.
                 напомни про ограничение: каждому смертному положено максимум 3 гадания в день.
                 """
                 usr_prompt = "тебя только что добавили в беседу, поприветствуй всех участников и расскажи о себе и своих правилах."
@@ -243,11 +271,11 @@ def process_event_async(data):
             return
 
         # 2. Команда ".гадать"
-        if text == ".гадать" or text.startswith(".гадать"):
-            print("🔮 [СОБЫТИЕ] Вызвана команда .гадать!")
+        if is_fortune_command(text):
+            print("🔮 [СОБЫТИЕ] Вызвана команда гадать!")
             if not check_and_update_limit_supabase(from_id):
                 limit_reply = random.choice(LIMIT_REACHED_RESPONSES)
-                send_vk_message(peer_id, limit_reply, reply_to_msg_id=msg_id)
+                send_vk_message(peer_id, limit_reply, reply_to_cmid=cmid)
                 return
 
             avataria_knowledge = load_avataria_knowledge()
@@ -264,9 +292,9 @@ def process_event_async(data):
             """
             usr_prompt = "выбери случайный факт из знаний про аватарию и сделай мне предсказание."
             reply = generate_ai_response(sys_prompt, usr_prompt)
-            send_vk_message(peer_id, reply, reply_to_msg_id=msg_id)
+            send_vk_message(peer_id, reply, reply_to_cmid=cmid)
         else:
-            print(f"ℹ️ [ПРОПУСК] Текст '{text}' не является командой .гадать")
+            print(f"ℹ️ [ПРОПУСК] Текст '{text}' не является командой гадать")
 
     except Exception as e:
         print(f"❌ [КРИТИЧЕСКАЯ ОШИБКА В ПОТОКЕ]: {e}")
@@ -281,7 +309,7 @@ def vk_callback():
         return 'Bot is running alive!', 200
 
     data = request.get_json(force=True, silent=True)
-    print(f"\n📥 [ВХОДЯЩИЙ HTTP POST 5.199]: {data}")
+    print(f"\n📥 [ВХОДЯЩИЙ ЗАПРОС ОТ ВК]: {data}")
 
     if not data:
         print("⚠️ [ВХОДЯЩИЙ HTTP] Данные пустые!")
@@ -296,19 +324,22 @@ def vk_callback():
     type_event = data.get('type')
 
     if type_event == 'confirmation':
-        print(f"✅ [CONFIRMATION] Отправляем токен: {VK_CONFIRMATION_TOKEN}")
-        return str(VK_CONFIRMATION_TOKEN)
+        if not VK_CONFIRMATION_TOKEN:
+            print("❌ [CONFIRMATION] VK_CONFIRMATION_TOKEN не задан на Render! ВК не сможет подтвердить сервер.")
+            return 'error', 500
+        print(f"✅ [CONFIRMATION] Отправляем строку подтверждения: {VK_CONFIRMATION_TOKEN}")
+        return VK_CONFIRMATION_TOKEN.strip(), 200
 
     elif type_event == 'message_new':
         obj = data.get('object', {})
         msg = obj.get('message', obj)
-        msg_id = msg.get('id') or msg.get('conversation_message_id')
+        msg_key = (msg.get('peer_id'), msg.get('conversation_message_id'), msg.get('id'))
 
-        if msg_id:
-            if msg_id in processed_msg_ids:
-                print(f"⚠️ [ДУБЛИКАТ] Сообщение msg_id={msg_id} уже обрабатывалось, пропуск.")
+        if msg_key[1] or msg_key[2]:
+            if msg_key in processed_msg_ids:
+                print(f"⚠️ [ДУБЛИКАТ] Сообщение {msg_key} уже обрабатывалось, пропуск.")
                 return 'ok'
-            processed_msg_ids.add(msg_id)
+            processed_msg_ids.add(msg_key)
             if len(processed_msg_ids) > 1000:
                 processed_msg_ids.clear()
 
