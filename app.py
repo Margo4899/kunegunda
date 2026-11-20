@@ -4,6 +4,7 @@ import re
 import random
 import requests
 import threading
+import time
 import traceback
 from datetime import datetime
 from flask import Flask, request
@@ -21,6 +22,8 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 VK_API_VERSION = "5.199"
+VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "241804933")
+SELF_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://kunegunda.onrender.com")
 
 print("==================== [СТАРТ КУНЕГУНДЫ] ====================")
 print(f"🔑 VK_CONFIRMATION_TOKEN: {'Задан' if VK_CONFIRMATION_TOKEN else '❌ НЕ ЗАДАН'}")
@@ -302,7 +305,78 @@ def process_event_async(data):
     finally:
         print("-------------------- [ФОНОВЫЙ ПОТОК ЗАВЕРШЕН] --------------------\n")
 
-# --- 6. FLASK И WEBHOOK ---
+# --- 6. LONG POLL: бот сам забирает сообщения из ВК ---
+# ВК не может подключиться к Render (Can't connect to server),
+# поэтому вместо Callback API используем Bots Long Poll API.
+def vk_api_call(method, **params):
+    params.update({"access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION})
+    res = requests.post(f"https://api.vk.com/method/{method}", data=params, timeout=30).json()
+    if "error" in res:
+        raise RuntimeError(f"{method}: код {res['error'].get('error_code')}: {res['error'].get('error_msg')}")
+    return res["response"]
+
+def long_poll_loop():
+    if not VK_GROUP_TOKEN:
+        print("❌ [LONG POLL] VK_GROUP_TOKEN не задан, Long Poll не запущен.")
+        return
+    server = None
+    while True:
+        try:
+            if server is None:
+                server = vk_api_call("groups.getLongPollServer", group_id=VK_GROUP_ID)
+                print("✅ [LONG POLL] Подключилась к ВК, жду сообщений...")
+            r = requests.get(server["server"], params={
+                "act": "a_check", "key": server["key"], "ts": server["ts"], "wait": 25
+            }, timeout=40).json()
+
+            if "failed" in r:
+                if r["failed"] == 1:
+                    server["ts"] = r["ts"]
+                else:
+                    print(f"🔄 [LONG POLL] Переподключение (failed={r['failed']})")
+                    server = None
+                continue
+
+            server["ts"] = r["ts"]
+            for update in r.get("updates", []):
+                if update.get("type") == "message_new":
+                    obj = update.get("object", {})
+                    msg = obj.get("message", obj)
+                    key = (msg.get("peer_id"), msg.get("conversation_message_id"), msg.get("id"))
+                    if key in processed_msg_ids:
+                        continue
+                    processed_msg_ids.add(key)
+                    if len(processed_msg_ids) > 1000:
+                        processed_msg_ids.clear()
+                    threading.Thread(target=process_event_async, args=(update,), daemon=True).start()
+        except Exception as e:
+            print(f"❌ [LONG POLL ОШИБКА]: {e}")
+            if "код 15" in str(e) or "код 100" in str(e):
+                print("ℹ️ Включите Long Poll API: Управление → Работа с API → Long Poll API.")
+            server = None
+            time.sleep(10)
+
+def keep_awake_loop():
+    """Бесплатный Render засыпает без входящих запросов, поэтому раз в 10 минут стучимся сами к себе."""
+    while True:
+        time.sleep(600)
+        try:
+            requests.get(SELF_URL, timeout=30)
+        except Exception as e:
+            print(f"⚠️ [KEEP AWAKE]: {e}")
+
+_started = False
+def start_background():
+    global _started
+    if _started:
+        return
+    _started = True
+    threading.Thread(target=long_poll_loop, daemon=True).start()
+    threading.Thread(target=keep_awake_loop, daemon=True).start()
+
+start_background()
+
+# --- 7. FLASK (страница проверки и запасной Callback API) ---
 @app.route('/', methods=['GET', 'POST'])
 def vk_callback():
     if request.method == 'GET':
