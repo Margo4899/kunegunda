@@ -225,10 +225,11 @@ def clean_ai_text(text, max_sentences, max_chars=None):
         return None
     return text
 
+# Бесплатный уровень: 3.5/3.1 Flash Lite по 500 запросов в день, 3.8 Flash только 20 в день
 GEMINI_MODELS = [
     "gemini-3.5-flash-lite",
-    "gemini-3.8-flash",
     "gemini-3.1-flash-lite",
+    "gemini-3.8-flash",
 ]
 
 def ask_gemini(model_name, system_instruction, user_prompt):
