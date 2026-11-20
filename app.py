@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import re
 import random
@@ -12,6 +13,10 @@ from groq import Groq
 from supabase import create_client, Client
 
 app = Flask(__name__)
+
+# Чтобы логи сразу появлялись в Render, а не застревали в буфере
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 # --- 1. ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 VK_CONFIRMATION_TOKEN = os.environ.get("VK_CONFIRMATION_TOKEN")
