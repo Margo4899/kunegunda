@@ -441,12 +441,39 @@ def person_rule(name, sex, last_name=None, allow_play=True):
             joke_last = f" или беззлобно пошути над фамилией {last_name}, если она смешная" if last_name else ""
             parts.append(f"в этот раз поиграй с именем: ласково или забавно переделай его (например данил, данечка, данилушка){joke_last}. только по-доброму, без обид. если имя похоже на ник, а не на настоящее имя, используй его как есть.")
     if sex == "f":
-        parts.append("это девушка, пиши о ней в женском роде.")
+        parts.append("это девушка: все слова о ней и ласковые обращения только в женском роде (родная, дорогая, милая).")
     elif sex == "m":
-        parts.append("это парень, пиши о нем в мужском роде.")
+        parts.append("это парень: все слова о нем и ласковые обращения только в мужском роде (родной, дорогой, милый), никаких родная, дорогая, милая.")
     else:
-        parts.append("пол неизвестен, обходи род, без слов вроде пошел или пошла.")
+        parts.append("пол неизвестен: обходи род, без слов вроде пошел или пошла, и без обращений родная или родной.")
     return " ".join(parts)
+
+# Ласковые обращения: (женский, мужской, нейтральный)
+GENDER_WORDS = [
+    ("родная", "родной", "солнце"), ("дорогая", "дорогой", "солнце"), ("милая", "милый", "солнце"),
+    ("красавица", "красавчик", "звезда"), ("голубушка", "голубчик", "солнце"),
+    ("моя хорошая", "мой хороший", "солнце"), ("подруга", "дружище", "солнце"),
+    ("деточка", "сынок", "солнце"), ("красотка", "красавчик", "звезда"),
+]
+
+def fix_gender_words(text, sex):
+    """Исправляет ласковые обращения не в том роде (модель иногда путает)."""
+    if not text:
+        return text
+    for f_word, m_word, n_word in GENDER_WORDS:
+        if sex == "m":
+            pairs = [(f_word, m_word)]
+        elif sex == "f":
+            pairs = [(m_word, f_word)] if m_word not in ("дружище", "сынок") else []
+        else:
+            pairs = [(f_word, n_word), (m_word, n_word)]
+        for wrong, right in pairs:
+            # только обращение: слово стоит отдельно между запятыми / в начале / перед ! . ?
+            new = re.sub(rf"(^|[,!.?]\s*)({wrong})(?=\s*[,!.?]|$)", lambda m: m.group(1) + right, text)
+            if new != text:
+                print(f"🩹 [РОД] заменила «{wrong}» на «{right}»")
+                text = new
+    return text
 
 def restore_name_case(raw, text, names):
     """Все пишется с маленькой буквы, но имена (и формы вроде Данечка) возвращаем с большой."""
@@ -725,6 +752,7 @@ def process_event_async(data):
 
             user_name, user_sex, user_last = get_vk_user_full(invited_id)
             user_sex = resolve_sex(user_name, user_sex)
+            print(f"👤 [НОВИЧОК] {user_name or 'имя не получено'}, пол: {user_sex or 'неизвестен'}")
             user_name = user_name or "новичок"
             tone = pick_tone()
             print(f"🎭 [ТОН ПРИВЕТСТВИЯ] {tone}")
@@ -736,6 +764,7 @@ def process_event_async(data):
             """
             usr_prompt = f"в беседу пришел новый участник по имени {user_name}, поприветствуй и сделай краткий расклад максимум в 2 предложения."
             reply = generate_ai_response(sys_prompt, usr_prompt, names=(user_name, user_last))
+            reply = fix_gender_words(reply, user_sex)
             reply = tag_person(reply, invited_id, (user_name, user_last))
             send_vk_message(peer_id, reply)
             return
@@ -797,6 +826,7 @@ def process_event_async(data):
             """
             usr_prompt = "погадай мне."
             reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=max_sent, max_chars=max_len, names=(name, last_name))
+            reply = fix_gender_words(reply, sex)
             reply = tag_person(reply, from_id, (name, last_name))
             if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, reply)):
                 send_vk_message(peer_id, reply, reply_to_cmid=cmid)
