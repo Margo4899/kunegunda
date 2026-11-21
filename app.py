@@ -28,9 +28,8 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 VK_API_VERSION = "5.199"
-# На время тестов: у этих людей (VK id через запятую) нет лимита гаданий.
-# Чтобы вернуть лимит, задайте на Render переменную LIMIT_EXEMPT_IDS пустой или уберите id отсюда.
-LIMIT_EXEMPT_IDS = {x.strip() for x in os.environ.get("LIMIT_EXEMPT_IDS", "691070777").split(",") if x.strip()}
+# Для тестов: у людей из переменной LIMIT_EXEMPT_IDS на Render (VK id через запятую) нет лимитов. По умолчанию лимиты у всех.
+LIMIT_EXEMPT_IDS = {x.strip() for x in os.environ.get("LIMIT_EXEMPT_IDS", "").split(",") if x.strip()}
 VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "241804933")
 SELF_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://kunegunda.onrender.com")
 
@@ -68,6 +67,31 @@ FALLBACK_RESPONSES = [
     "зелье пока кипит, не могу разглядеть твоё будущее, зайди через часок."
 ]
 
+# Отдельный абзац после гадания: сколько осталось
+REMAINING_NOTES = {
+    2: [
+        "🔮 у тебя осталось еще 2 гадания на сегодня, шар пока теплый.",
+        "🕯 еще две свечи горят для тебя сегодня, приходи, если не боишься правды.",
+        "🃏 в колоде для тебя на сегодня еще 2 расклада.",
+    ],
+    1: [
+        "🕯 осталось одно гадание на сегодня, береги его, как последнюю свечу.",
+        "🔮 последний расклад на сегодня ждет тебя, не растрать его на пустяки.",
+        "🃏 в колоде осталась одна карта для тебя, выбирай момент с умом.",
+    ],
+    0: [
+        "🌙 это было последнее гадание на сегодня, шар уходит спать до завтра.",
+        "🌙 на сегодня все, свечи погасли, приходи завтра за новой судьбой.",
+        "💤 три расклада позади, духи устали, жду тебя завтра.",
+    ],
+}
+
+def remaining_note(user_id):
+    left = _last_remaining.get(user_id)
+    if left is None or left not in REMAINING_NOTES:
+        return ""
+    return "\n\n" + random.choice(REMAINING_NOTES[left])
+
 LIMIT_REACHED_RESPONSES = [
     "слишком много желаешь знать за один день, твои 3 гадания на сегодня исчерпаны, приходи завтра.",
     "трижды перст судьбы уже указал тебе путь на сегодня, больше шар не покажет, жди завтрашнего дня.",
@@ -98,7 +122,16 @@ SYSTEM_PROMPT_BASE = """
 """
 
 # --- 2. ЛИМИТЫ (SUPABASE) ---
+DAILY_LIMIT = 3
+_last_remaining = {}  # user_id -> сколько гаданий осталось после последнего
+
 def check_and_update_limit_supabase(user_id):
+    """True, если можно гадать. Сколько осталось после этого гадания, кладем в _last_remaining[user_id]."""
+    _last_remaining.pop(user_id, None)
+    ok = _check_limit(user_id)
+    return ok
+
+def _check_limit(user_id):
     if str(user_id) in LIMIT_EXEMPT_IDS:
         print(f"🧪 [ТЕСТ] Лимит для user_id={user_id} отключен (LIMIT_EXEMPT_IDS).")
         return True
@@ -118,6 +151,7 @@ def check_and_update_limit_supabase(user_id):
                 "count": 1,
                 "last_date": today
             }).execute()
+            _last_remaining[user_id] = DAILY_LIMIT - 1
             return True
 
         user_record = data[0]
@@ -130,9 +164,10 @@ def check_and_update_limit_supabase(user_id):
                 "count": 1,
                 "last_date": today
             }).eq("user_id", user_id).execute()
+            _last_remaining[user_id] = DAILY_LIMIT - 1
             return True
 
-        if count >= 3:
+        if count >= DAILY_LIMIT:
             print(f"⚠️ [SUPABASE] Лимит исчерпан для user_id={user_id} (уже {count} гаданий).")
             return False
 
@@ -140,6 +175,7 @@ def check_and_update_limit_supabase(user_id):
         supabase.table("user_limits").update({
             "count": count + 1
         }).eq("user_id", user_id).execute()
+        _last_remaining[user_id] = DAILY_LIMIT - (count + 1)
         return True
 
     except Exception as e:
@@ -967,6 +1003,7 @@ def process_event_async(data):
             reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=max_sent, max_chars=max_len, names=(name, last_name))
             reply = fix_gender_words(reply, sex)
             reply = tag_person(reply, from_id, (name, last_name))
+            reply += remaining_note(from_id)
             if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, reply)):
                 send_vk_message(peer_id, reply, reply_to_cmid=cmid)
         else:
