@@ -1210,7 +1210,7 @@ def long_poll_loop():
 
 # ---- Разовая рассылка во все беседы ----
 # Чтобы отправить новую рассылку: поменяйте BROADCAST_ID на новое число и текст. Одна рассылка уходит только один раз.
-BROADCAST_ID = 20261122
+BROADCAST_ID = 20261123
 BROADCAST_TEXT = """🔮 духи нашептали расписание судьбы:
 
 🕛 каждую полночь по МСК шар обновляется, и снова можно 3 раза написать «гадать».
@@ -1234,23 +1234,26 @@ def run_broadcast_once():
         print(f"⚠️ [РАССЫЛКА] Не удалось проверить отметку в Supabase, рассылку не делаю: {e}")
         return
 
-    # беседы сообщества нумеруются по порядку: 2000000001, 2000000002, ... — проверяем, какие существуют
+    # беседы сообщества нумеруются по порядку: 2000000001, 2000000002, ... — проверяем по одной
     peers = []
-    try:
-        for start in range(2000000001, 2000000101, 50):
-            ids = ",".join(str(i) for i in range(start, start + 50))
+    misses = 0
+    for pid in range(2000000001, 2000000201):
+        try:
             r = requests.post("https://api.vk.com/method/messages.getConversationsById", data={
-                "peer_ids": ids, "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
-            }, timeout=30).json()
-            if "error" in r:
-                print(f"❌ [РАССЫЛКА] Не удалось получить беседы: {r['error'].get('error_msg')}")
+                "peer_ids": pid, "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
+            }, timeout=20).json()
+            items = (r.get("response") or {}).get("items", []) if "error" not in r else []
+        except Exception as e:
+            print(f"⚠️ [РАССЫЛКА] Ошибка проверки беседы {pid}: {e}")
+            items = []
+        if items:
+            peers.append(pid)
+            misses = 0
+        else:
+            misses += 1
+            if misses >= 5:
                 break
-            for it in (r.get("response") or {}).get("items", []):
-                pid = (it.get("peer") or {}).get("id")
-                if pid and pid >= 2000000000:
-                    peers.append(pid)
-    except Exception as e:
-        print(f"❌ [РАССЫЛКА] Ошибка списка бесед: {e}")
+        time.sleep(0.4)
     print(f"📣 [РАССЫЛКА] {BROADCAST_ID}: отправляю в {len(peers)} бесед: {peers}")
     for pid in peers:
         send_vk_message(pid, BROADCAST_TEXT)
