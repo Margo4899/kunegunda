@@ -86,9 +86,9 @@ REMAINING_NOTES = {
         "🃏 в колоде осталась одна карта для тебя, выбирай момент с умом.",
     ],
     0: [
-        "🌙 это было последнее гадание на сегодня, шар уходит спать до завтра.",
-        "🌙 на сегодня все, свечи погасли, приходи завтра за новой судьбой.",
-        "💤 три расклада позади, духи устали, жду тебя завтра.",
+        "🌙 это было последнее гадание на сегодня, шар уходит спать. новые гадания появятся после полуночи по МСК.",
+        "🌙 на сегодня все, свечи погасли. после полуночи по МСК зажгу их снова.",
+        "💤 три расклада позади, духи устали. жду тебя после полуночи по МСК.",
     ],
 }
 
@@ -99,11 +99,11 @@ def remaining_note(user_id):
     return "\n\n" + random.choice(REMAINING_NOTES[left])
 
 LIMIT_REACHED_RESPONSES = [
-    "слишком много желаешь знать за один день, твои 3 гадания на сегодня исчерпаны, приходи завтра.",
-    "трижды перст судьбы уже указал тебе путь на сегодня, больше шар не покажет, жди завтрашнего дня.",
-    "не пытай судьбу свыше меры, лимит в 3 гадания на сегодня исчерпан, приходи завтра.",
-    "очи мои устали зрить твоё будущее, 3 гадания в день это предел, отдохни до завтра.",
-    "уповай на терпение, три предсказания на сей день ты уже исчерпал, явись утречком."
+    "слишком много желаешь знать за один день, твои 3 гадания на сегодня закончились. новые появятся после полуночи по МСК.",
+    "трижды перст судьбы уже указал тебе путь на сегодня, больше шар не покажет. жди полуночи по МСК.",
+    "не пытай судьбу свыше меры, 3 гадания на сегодня уже позади. шар проснется после полуночи по МСК.",
+    "очи мои устали зрить твое будущее, 3 гадания в день это предел. отдохни до полуночи по МСК.",
+    "уповай на терпение, три предсказания на сей день уже сделаны. приходи после полуночи по МСК.",
 ]
 
 SYSTEM_PROMPT_BASE = """
@@ -957,7 +957,7 @@ def handle_love(peer_id, from_id, cmid):
 
     if not check_and_mark_love(from_id):
         print(f"💘 [ПАРА ДНЯ] {name} уже искал(а) пару сегодня, отвечаю заготовкой")
-        send_vk_message(peer_id, random.choice(LOVE_USED_REPLIES).format(name=who_tag), reply_to_cmid=cmid)
+        send_vk_message(peer_id, random.choice(LOVE_USED_REPLIES).format(name=who_tag) + "\n\n💘 новую пару дня я найду после полуночи по МСК.", reply_to_cmid=cmid)
         return
 
     thinking = random.choice(LOVE_THINKING).format(name=f"{who_tag}, " if name else "")
@@ -1208,58 +1208,6 @@ def long_poll_loop():
             server = None
             time.sleep(10)
 
-# ---- Разовая рассылка во все беседы ----
-# Чтобы отправить новую рассылку: поменяйте BROADCAST_ID на новое число и текст. Одна рассылка уходит только один раз.
-BROADCAST_ID = 20261123
-BROADCAST_TEXT = """🔮 духи нашептали расписание судьбы:
-
-🕛 каждую полночь по МСК шар обновляется, и снова можно 3 раза написать «гадать».
-💘 а раз в день пишите «суженый» или «суженая», и я найду вам пару дня ✨"""
-
-def run_broadcast_once():
-    """Отправляет BROADCAST_TEXT во все беседы один раз. Отметка, что уже отправлено, хранится в Supabase."""
-    if not BROADCAST_ID or not BROADCAST_TEXT or not VK_GROUP_TOKEN:
-        return
-    if not supabase:
-        print("⚠️ [РАССЫЛКА] Supabase недоступна, рассылку не делаю (иначе она может повториться).")
-        return
-    flag_id = -BROADCAST_ID  # отметка в таблице love_limits под отрицательным id
-    try:
-        res = supabase.table("love_limits").select("*").eq("user_id", flag_id).execute()
-        if res.data:
-            print(f"ℹ️ [РАССЫЛКА] {BROADCAST_ID} уже была отправлена раньше, пропускаю.")
-            return
-        supabase.table("love_limits").upsert({"user_id": flag_id, "last_date": "broadcast-sent"}).execute()
-    except Exception as e:
-        print(f"⚠️ [РАССЫЛКА] Не удалось проверить отметку в Supabase, рассылку не делаю: {e}")
-        return
-
-    # беседы сообщества нумеруются по порядку: 2000000001, 2000000002, ... — проверяем по одной
-    peers = []
-    misses = 0
-    for pid in range(2000000001, 2000000201):
-        try:
-            r = requests.post("https://api.vk.com/method/messages.getConversationsById", data={
-                "peer_ids": pid, "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
-            }, timeout=20).json()
-            items = (r.get("response") or {}).get("items", []) if "error" not in r else []
-        except Exception as e:
-            print(f"⚠️ [РАССЫЛКА] Ошибка проверки беседы {pid}: {e}")
-            items = []
-        if items:
-            peers.append(pid)
-            misses = 0
-        else:
-            misses += 1
-            if misses >= 5:
-                break
-        time.sleep(0.4)
-    print(f"📣 [РАССЫЛКА] {BROADCAST_ID}: отправляю в {len(peers)} бесед: {peers}")
-    for pid in peers:
-        send_vk_message(pid, BROADCAST_TEXT)
-        time.sleep(1)
-    print("📣 [РАССЫЛКА] готово")
-
 def keep_awake_loop():
     """Бесплатный Render засыпает без входящих запросов, поэтому раз в 10 минут стучимся сами к себе."""
     while True:
@@ -1277,7 +1225,6 @@ def start_background():
     _started = True
     threading.Thread(target=long_poll_loop, daemon=True).start()
     threading.Thread(target=keep_awake_loop, daemon=True).start()
-    threading.Thread(target=lambda: (time.sleep(20), run_broadcast_once()), daemon=True).start()
 
 start_background()
 
