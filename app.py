@@ -82,6 +82,7 @@ SYSTEM_PROMPT_BASE = """
 ты бываешь ворчливой, язвительной, с ухмылкой, задумчивой, игривой, драматичной, сердитой или неожиданно нежной.
 можешь поворчать, съязвить, поддеть или фыркнуть, но без мата и без настоящих оскорблений: не унижай за внешность, ум, пол и прочее личное.
 говоришь простым живым современным языком, как опытная гадалка с чувством юмора.
+пишешь только свою прямую речь от первого лица. никаких ремарок и описаний действий от третьего лица вроде зевает, вздыхает, ухмыляется, смотрит в шар. если зеваешь, так и скажи: ох, я только проснулась.
 не затрагиваешь запрещенные темы: взломы, продажу аккаунтов, читы, накрутки, политику, религию, взрослые темы.
 иногда, примерно в каждом третьем ответе, можешь вставить одно старинное словечко и каждый раз разное: ныне, отныне, воистину, вскорости, сей, грядущее, давеча, авось, чую, ведаю, покуда, нонче, лиходей, отрада. слово зело не используй никогда, а ибо почти никогда.
 
@@ -267,11 +268,18 @@ def clean_ai_text(text, max_sentences, max_chars=None, finished=False, names=(),
     if not text:
         return None
     text = THINK_RE.sub("", text)
+    # ремарки вроде *зевает* или (вздыхает) убираем целиком
+    text = re.sub(r"\*[^*]{1,60}\*", "", text)
+    text = re.sub(r"\([^)]{1,60}\)", "", text)
     text = re.sub(r"[*_#`>]", "", text)  # markdown
     text = text.replace("—", ",").replace("–", ",").replace("«", "").replace("»", "").replace('"', "").replace("“", "").replace("”", "")
     text = re.sub(r"\s+", " ", text).strip().lower()
     text = re.sub(r"\s+([,.!?])", r"\1", text)
     text = re.sub(r",+", ",", text)
+    # ремарки без звездочек: отдельное слово-действие от третьего лица между знаками препинания
+    text = re.sub(r"(^|[,.!?…]\s*)(зевает|вздыхает|ухмыляется|ворчит|фыркает|хихикает|подмигивает|потягивается|улыбается|хмурится|задумывается)(\s*[,.!?…]+)", r"\1", text)
+    text = re.sub(r"^[\s,.!?…]+", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
     text = text.replace(";", ".")
     text = re.sub(r"(?<![а-яё])зело(?![а-яё])", "очень", text)
     if random.random() < 0.85:  # ибо оставляем изредка
@@ -405,6 +413,23 @@ def get_vk_user_full(user_id):
     if user_id in _user_cache:
         return _user_cache[user_id]
     name, sex, last = None, None, None
+    if isinstance(user_id, int) and user_id < 0:
+        # это не человек, а сообщество / другой бот: берем его название
+        try:
+            res = requests.get("https://api.vk.com/method/groups.getById", params={
+                "group_ids": -user_id, "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
+            }, timeout=15).json()
+            resp = res.get("response")
+            groups = resp.get("groups", []) if isinstance(resp, dict) else (resp or [])
+            if groups:
+                name = groups[0].get("name")
+            elif "error" in res:
+                print(f"⚠️ [ВК ОШИБКА ИМЕНИ БОТА]: {res['error'].get('error_msg')}")
+        except Exception as e:
+            print(f"⚠️ [ВК ОШИБКА ИМЕНИ БОТА]: {e}")
+        print(f"🤖 [БОТ] {user_id}: {name or 'название не получено'}")
+        _user_cache[user_id] = (name, None, None)
+        return name, None, None
     try:
         res = requests.get("https://api.vk.com/method/users.get", params={
             "user_ids": user_id, "fields": "sex",
@@ -456,6 +481,8 @@ def sex_from_name(name):
 
 def resolve_sex(name, profile_sex):
     """Сначала пол по имени (как в нике), если не понятно, то из профиля ВК."""
+    if name and " " in name.strip():
+        return profile_sex  # название из нескольких слов (например бот-сообщество), по нему пол не понять
     return sex_from_name(name) or profile_sex
 
 def person_rule(name, sex, last_name=None, allow_play=True):
@@ -515,7 +542,9 @@ def restore_name_case(raw, text, names):
     return text
 
 def mention(user_id, text):
-    """Отметка человека синей ссылкой: [id123|Данил]."""
+    """Отметка человека синей ссылкой: [id123|Данил]. У ботов (отрицательный id) просто имя текстом."""
+    if not user_id or (isinstance(user_id, int) and user_id < 0):
+        return text
     return f"[id{user_id}|{text}]"
 
 def tag_person(reply, user_id, names):
