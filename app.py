@@ -235,9 +235,13 @@ FORTUNE_TONES = [
 ]
 _last_tone = {"name": None}
 
-def pick_tone():
-    """Случайное настроение, не такое же, как в прошлый раз."""
-    choices = [t for t in FORTUNE_TONES if t[0] != _last_tone["name"]]
+# Для приветствия новичков: только приятные настроения, чтобы первое впечатление было хорошим
+FRIENDLY_TONES = ("задумчивая", "игривая", "драматичная", "загадочная", "нежная")
+
+def pick_tone(friendly_only=False):
+    """Случайное настроение, не такое же, как в прошлый раз. friendly_only: только приятные."""
+    pool = [t for t in FORTUNE_TONES if t[0] in FRIENDLY_TONES] if friendly_only else FORTUNE_TONES
+    choices = [t for t in pool if t[0] != _last_tone["name"]] or pool
     name, how = random.choice(choices)
     _last_tone["name"] = name
     return how
@@ -759,6 +763,7 @@ def process_event_async(data):
                 sys_prompt = SYSTEM_PROMPT_BASE + """
                 расскажи о себе: ты гадалка кунегунда, долго жила в пещерах тропикании, но решила вылезти к людям и помогать им своими магическими силами.
                 только поприветствуй беседу и коротко представься, правила и команды не перечисляй, их добавят отдельно.
+                это первое знакомство: будь приветливой и обаятельной, никакой грубости и ворчания.
                 """
                 usr_prompt = "тебя только что добавили в беседу, поприветствуй всех и коротко представься, 2 предложения."
                 intro = generate_ai_response(sys_prompt, usr_prompt, max_sentences=2, max_chars=260)
@@ -770,10 +775,11 @@ def process_event_async(data):
             user_sex = resolve_sex(user_name, user_sex)
             print(f"👤 [НОВИЧОК] {user_name or 'имя не получено'}, пол: {user_sex or 'неизвестен'}")
             user_name = user_name or "новичок"
-            tone = pick_tone()
+            tone = pick_tone(friendly_only=True)
             print(f"🎭 [ТОН ПРИВЕТСТВИЯ] {tone}")
             sys_prompt = SYSTEM_PROMPT_BASE + f"""
             представься как гадалка кунегунда, назови нового участника по имени и сделай ему позитивный расклад про эту беседу.
+            это первое знакомство: будь приветливой, никакого ворчания, язвительности, грубости и подколов, чтобы новичку захотелось остаться.
             твое настроение сейчас: {tone}.
             строгое ограничение: твой ответ должен состоять максимум из 2 предложений.
             обращение строго на ты. {person_rule(user_name, user_sex, user_last)}
