@@ -1208,6 +1208,59 @@ def long_poll_loop():
             server = None
             time.sleep(10)
 
+# ---- Разовая рассылка во все беседы ----
+# Чтобы отправить новую рассылку: поменяйте BROADCAST_ID на новое число и текст. Одна рассылка уходит только один раз.
+BROADCAST_ID = 20261121
+BROADCAST_TEXT = """🔮 духи нашептали расписание судьбы:
+
+🕛 каждую полночь по МСК шар обновляется, и снова можно 3 раза написать «гадать».
+💘 а раз в день пишите «суженый» или «суженая», и я найду вам пару дня ✨"""
+
+def run_broadcast_once():
+    """Отправляет BROADCAST_TEXT во все беседы один раз. Отметка, что уже отправлено, хранится в Supabase."""
+    if not BROADCAST_ID or not BROADCAST_TEXT or not VK_GROUP_TOKEN:
+        return
+    if not supabase:
+        print("⚠️ [РАССЫЛКА] Supabase недоступна, рассылку не делаю (иначе она может повториться).")
+        return
+    flag_id = -BROADCAST_ID  # отметка в таблице love_limits под отрицательным id
+    try:
+        res = supabase.table("love_limits").select("*").eq("user_id", flag_id).execute()
+        if res.data:
+            print(f"ℹ️ [РАССЫЛКА] {BROADCAST_ID} уже была отправлена раньше, пропускаю.")
+            return
+        supabase.table("love_limits").upsert({"user_id": flag_id, "last_date": "broadcast-sent"}).execute()
+    except Exception as e:
+        print(f"⚠️ [РАССЫЛКА] Не удалось проверить отметку в Supabase, рассылку не делаю: {e}")
+        return
+
+    peers = []
+    try:
+        offset = 0
+        while True:
+            r = requests.post("https://api.vk.com/method/messages.getConversations", data={
+                "count": 200, "offset": offset, "filter": "all",
+                "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
+            }, timeout=30).json()
+            if "error" in r:
+                print(f"❌ [РАССЫЛКА] Не удалось получить список бесед: {r['error'].get('error_msg')}")
+                break
+            items = r["response"].get("items", [])
+            for it in items:
+                peer = it.get("conversation", {}).get("peer", {})
+                if peer.get("type") == "chat":
+                    peers.append(peer.get("id"))
+            if len(items) < 200:
+                break
+            offset += 200
+    except Exception as e:
+        print(f"❌ [РАССЫЛКА] Ошибка списка бесед: {e}")
+    print(f"📣 [РАССЫЛКА] {BROADCAST_ID}: отправляю в {len(peers)} бесед: {peers}")
+    for pid in peers:
+        send_vk_message(pid, BROADCAST_TEXT)
+        time.sleep(1)
+    print("📣 [РАССЫЛКА] готово")
+
 def keep_awake_loop():
     """Бесплатный Render засыпает без входящих запросов, поэтому раз в 10 минут стучимся сами к себе."""
     while True:
@@ -1225,6 +1278,7 @@ def start_background():
     _started = True
     threading.Thread(target=long_poll_loop, daemon=True).start()
     threading.Thread(target=keep_awake_loop, daemon=True).start()
+    threading.Thread(target=lambda: (time.sleep(20), run_broadcast_once()), daemon=True).start()
 
 start_background()
 
