@@ -224,6 +224,10 @@ def pick_fact(user_id):
     n = len(AVATARIA_FACTS)
     blocked = set(seen) | set(recent_facts_global)
     choices = [i for i in range(n) if i not in blocked] or [i for i in range(n) if i not in seen] or list(range(n))
+    recent_sections = {AVATARIA_FACTS[j][0] for j in recent_facts_global[-3:]}
+    other_sections = [i for i in choices if AVATARIA_FACTS[i][0] not in recent_sections]
+    if other_sections:
+        choices = other_sections  # не подряд из одного раздела (шопинг, шопинг, шопинг...)
     fresh = [i for i in choices if any(w in AVATARIA_FACTS[i][0].lower() for w in NEW_SECTION_WORDS)]
     if fresh and random.random() < NEW_FACT_CHANCE:
         choices = fresh
@@ -233,6 +237,53 @@ def pick_fact(user_id):
     recent_facts_global.append(i)
     del recent_facts_global[:-min(5, n - 1 if n > 1 else 1)]
     return AVATARIA_FACTS[i]
+
+# ---- Память, чтобы не повторяться ----
+from collections import deque
+RECENT_REPLIES = deque(maxlen=12)          # последние ответы Кунегунды (все беседы)
+RECENT_BY_USER = {}                        # user_id -> последние ответы этому человеку
+_recent_picks = {}                         # "lore"/"npc"/"format"/... -> последние выбранные варианты
+
+def remember_reply(user_id, text):
+    clean = re.sub(r"\[id\d+\|([^\]]+)\]", r"\1", text or "")
+    RECENT_REPLIES.append(clean)
+    RECENT_BY_USER.setdefault(user_id, deque(maxlen=5)).append(clean)
+
+def avoid_repeats_rule(user_id):
+    """Подсказка модели: что уже было сказано недавно, чтобы не повторять."""
+    items = list(RECENT_BY_USER.get(user_id, [])) + [r for r in list(RECENT_REPLIES)[-6:] if r not in RECENT_BY_USER.get(user_id, [])]
+    if not items:
+        return ""
+    lines = "\n".join(f"- {x[:160]}" for x in items[-8:])
+    return f"""
+            недавно ты уже говорила вот это (не повторяй эти идеи, образы, сюжеты и обороты, придумай что-то совсем новое):
+{lines}"""
+
+def pick_fresh(kind, options, keep=5):
+    """Случайный вариант, который не выпадал в последние keep раз."""
+    recent = _recent_picks.setdefault(kind, deque(maxlen=max(1, min(keep, len(options) - 1))))
+    choices = [o for o in options if o not in recent] or list(options)
+    pick = random.choice(choices)
+    recent.append(pick)
+    return pick
+
+# Необычные форматы предсказания (иногда), чтобы было оригинальнее
+FORTUNE_FORMATS = [
+    "в виде прогноза погоды на завтра",
+    "в виде срочной новости",
+    "в виде гороскопа",
+    "в виде рецепта из двух шагов",
+    "в виде совета старой бабушки",
+    "в виде репортажа спортивного комментатора",
+    "в виде смс от самой судьбы",
+    "в виде маленькой загадки с ответом",
+    "в виде тоста",
+    "в виде объявления на столбе",
+    "в виде записи из дневника кунегунды",
+]
+FORMAT_CHANCE = 0.35
+
+NO_MIXING_RULE = "не смешивай разные события и места: не упоминай другие акции, праздники, локации и предметы, которых нет в факте (например не путай ярмарку с зазеркальем или хэллоуином)."
 
 # О чем предсказание
 FORTUNE_MOODS = [
@@ -621,7 +672,7 @@ def tag_person(reply, user_id, names, label=None, prepend=True):
             shown = m.group(0) if m.group(0)[0].isupper() else (first or m.group(0))
             return reply[:m.start()] + mention(user_id, label or shown) + reply[m.end():]
     # ответ начинается с обращения "микола," — модель переделала ник, заменяем это слово на отметку
-    m = re.match(r"^([^\s,.!?]{1,25}),", reply)
+    m = re.match(r"^([^\s,.!?\[\]|]{1,25}),", reply)
     if m and first and m.group(1).lower() not in INTERJECTIONS:
         return mention(user_id, label or first) + reply[m.end(1):]
     if not prepend or not first:
@@ -726,6 +777,31 @@ LOVE_KEYWORDS = ("свад", "отношен", "влюб", "любв", "любо
 
 def love_facts():
     return [f for f in AVATARIA_FACTS if any(k in (f[0] + " " + f[1]).lower() for k in LOVE_KEYWORDS)] or AVATARIA_FACTS
+
+# Смешные и милые сюжеты для пары дня (берется один, не повторяется подряд)
+LOVE_SCENARIOS = [
+    "они случайно начнут бой подушками, а закончат его общим селфи",
+    "один подарит другому авапаку, а она убежит к третьему",
+    "они вместе заблудятся в лабиринте и даже не захотят выходить",
+    "на катке они попробуют станцевать медляк и дружно упадут",
+    "в кулинарии они не поделят последний кусок торта и разделят его пополам",
+    "в редакторе комнат они полчаса будут спорить, куда поставить диван",
+    "в фотостудии у них выйдет самое смешное парное фото дня",
+    "на подиуме кутюрье они случайно наденут одинаковые наряды",
+    "в бродилке легенда о зео они будут болеть друг за друга сильнее, чем за себя",
+    "на свадебной локации жабулька станет их свидетелем",
+    "один закидает другого приколами, а тот ответит фейерверком",
+    "они вместе пойдут кормить сурикатов и не поделят банку с жуками",
+    "на танцполе в клубе диджей поставит им их песню",
+    "в гонках на машинах один специально пропустит другого вперед",
+    "они будут вместе ждать конца вечной загрузки и подружатся окончательно",
+    "в челлендже клубов они будут кидать торты на перегонки",
+]
+LOVE_STYLES = [
+    "как сериал или мыльная опера", "как свадебный тост", "как прогноз погоды на любовь",
+    "как сказку", "как срочную новость", "как спортивный репортаж", "как гороскоп совместимости",
+    "просто и мило", "очень смешно, почти абсурдно",
+]
 
 LOVE_THINKING = [
     "💘 {name}смотрю, чье сердце сегодня бьется в такт с твоим...",
@@ -848,35 +924,48 @@ def handle_love(peer_id, from_id, cmid):
     else:
         pid, pname, plast, psex = random.choice(members)
         psex = resolve_sex(pname, psex)
-    topic, fact = random.choice(love_facts())
     tone = pick_tone()
-    print(f"💘 [ПАРА ДНЯ] {name} + {pname} | факт: {fact} | тон: {tone}")
+    style = pick_fresh("love_style", LOVE_STYLES, keep=4)
+    if random.random() < 0.6:
+        scenario = pick_fresh("love_scenario", LOVE_SCENARIOS, keep=10)
+        about = f"сюжет: {scenario}."
+    else:
+        topic, fact = random.choice(love_facts())
+        about = f"связано с этим фактом из игры:\n            тема: {topic}\n            факт: {fact}"
+    print(f"💘 [ПАРА ДНЯ] {name} + {pname} | {about} | стиль: {style} | тон: {tone}")
 
     def who(n, sx):
         return {"m": f"{n} (парень)", "f": f"{n} (девушка)"}.get(sx, f"{n} (пол неизвестен, обходи род)")
 
     sys_prompt = SYSTEM_PROMPT_BASE + f"""
             ты определяешь пару дня в беседе: {who(name or 'игрок', sex)} и {pname + ' (это игровой бот аватарии, сделай шуточный шип)' if npc else who(pname or 'участник', psex)}.
-            напиши милое романтическое предсказание для этой пары в игре аватария, связанное с этим фактом:
-            тема: {topic}
-            факт: {fact}
+            напиши оригинальное романтическое предсказание для этой пары в игре аватария, {style}.
+            {about}
 
             правила:
             1. упомяни оба имени ровно один раз каждое, имена пиши с большой буквы. не пиши фразу вроде пара дня это, сразу переходи к предсказанию.
             2. только невинная романтика в игре: симпатия, прогулка, танец, подарок, свидание в игре, игровая свадьба. ничего взрослого.
             3. твое настроение сейчас: {tone}. но к паре по-доброму, никого не высмеивай.
             4. не больше 2 коротких предложений, не больше 35 слов.
-            5. это предсказание о будущем, не придумывай нелепых деталей.
+            5. это предсказание о будущем. {NO_MIXING_RULE}
+            6. будь оригинальной и неожиданной, никаких банальностей вроде вас ждет любовь и счастье.
+            {avoid_repeats_rule(from_id)}
             """
     reply = generate_ai_response(sys_prompt, "найди нам пару дня.", max_sentences=2, max_chars=300,
                                  names=(name, last_name, pname, plast))
+    remember_reply(from_id, reply)
     reply = tag_person(reply, from_id, (name, last_name), prepend=False)
     if not npc:
         reply = tag_person(reply, pid, (pname, plast), prepend=False)
     me_tagged = mention(from_id, "x").split("|")[0] in reply if from_id > 0 else (name or "") in reply
     partner_tagged = npc or mention(pid, "x").split("|")[0] in reply
+    partner_tag = pname if npc else mention(pid, pname or 'кто-то')
     if me_tagged and partner_tagged:
         text = f"💘 пара дня\n{reply}"
+    elif me_tagged:
+        text = f"💘 твоя пара дня: {partner_tag}\n{reply}"
+    elif partner_tagged:
+        text = f"💘 пара дня для {mention(from_id, name or 'тебя')}\n{reply}"
     else:
         partner_tag = pname if npc else mention(pid, pname or 'кто-то')
         text = f"💘 пара дня: {mention(from_id, name or 'ты')} + {partner_tag}\n{reply}"
@@ -968,20 +1057,21 @@ def process_event_async(data):
             placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
 
             topic, fact = pick_fact(from_id)
-            mood = random.choice(FORTUNE_MOODS)
+            mood = pick_fresh("mood", FORTUNE_MOODS, keep=4)
             if random.random() < NPC_SHIP_CHANCE:
-                npc = random.choice(GAME_NPCS)
+                npc = pick_fresh("npc", GAME_NPCS, keep=8)
                 mood = f"шуточный роман (шип) с игровым ботом: {npc}. по-доброму и смешно, связав это с фактом"
             tone = pick_tone()
-            lore = random.choice(KUNEGUNDA_LORE) if KUNEGUNDA_LORE and random.random() < LORE_CHANCE else None
+            lore = pick_fresh("lore", KUNEGUNDA_LORE, keep=20) if KUNEGUNDA_LORE and random.random() < LORE_CHANCE else None
+            fmt = pick_fresh("format", FORTUNE_FORMATS, keep=6) if random.random() < FORMAT_CHANCE else None
             print(f"📚 [ФАКТ] {topic}: {fact}")
-            print(f"🎭 [ТОН] {tone} | о чем: {mood} | о себе: {lore or 'нет'}")
+            print(f"🎭 [ТОН] {tone} | о чем: {mood} | о себе: {lore or 'нет'} | формат: {fmt or 'обычный'}")
 
             lore_rule = ""
             max_sent, max_len, max_words = 2, 220, 25
             if lore:
                 lore_rule = f"""
-            7. в этот раз вскользь, одной короткой фразой от первого лица (я...), расскажи о себе: {lore}. это про тебя, кунегунду, а не про собеседника. предсказание все равно про факт выше."""
+            7. в этот раз вскользь, одной отдельной короткой фразой от первого лица (я...), расскажи о себе: {lore}. это про тебя, кунегунду, а не про собеседника, и не смешивай это с предсказанием. предсказание все равно про факт выше."""
                 max_sent, max_len, max_words = 3, 300, 35
 
             sys_prompt = SYSTEM_PROMPT_BASE + f"""
@@ -990,18 +1080,21 @@ def process_event_async(data):
             факт: {fact}
 
             как писать предсказание:
-            1. только про этот факт. не упоминай другие вещи из игры, не придумывай новые предметы.
-            2. предскажи {mood}.
+            1. только про этот факт. {NO_MIXING_RULE} не придумывай новые предметы.
+            2. предскажи {mood}.{(" подай предсказание " + fmt + ".") if fmt else ""}
+            2а. будь оригинальной и неожиданной, иногда смешной: никаких банальностей вроде тебя ждет удача.
             3. твое настроение сейчас: {tone}. это должно быть сразу заметно.
             4. не больше {max_sent} коротких предложений, всего не больше {max_words} слов.
             5. смысл должен быть понятен с первого прочтения, без нагромождений.
             5а. сегодня {datetime.now().strftime("%d.%m.%Y")}. если факт про акцию, праздник или событие, которое уже прошло (ярмарка, хэллоуин, день семьи, пятница 13, весенний пруд, золотая осень и т.п.), гадай про следующее такое же событие: например после 10-й ярмарки будет 11-я, после прошлого хэллоуина будет следующий. предположи, что там будет похожее, как опытная гадалка.
             5б. это предсказание о будущем: не утверждай, что игрок уже что-то сделал. не придумывай нелепых деталей, которых нет в факте (никаких салатов, отверток и т.п.).
             6. обращайся на ты. {person_rule(name, sex, last_name)}{lore_rule}
+            {avoid_repeats_rule(from_id)}
             """
             usr_prompt = "погадай мне."
             reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=max_sent, max_chars=max_len, names=(name, last_name))
             reply = fix_gender_words(reply, sex)
+            remember_reply(from_id, reply)
             reply = tag_person(reply, from_id, (name, last_name))
             reply += remaining_note(from_id)
             if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, reply)):
