@@ -261,7 +261,7 @@ LORE_CHANCE = 0.2  # примерно каждое пятое гадание
 BAD_CHARS_RE = re.compile(r"[\u0590-\u08ff\u0e00-\u0fff\u1100-\u11ff\u3000-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
-def clean_ai_text(text, max_sentences, max_chars=None, finished=False, names=()):
+def clean_ai_text(text, max_sentences, max_chars=None, finished=False, names=(), min_sentences=1):
     """Чистит ответ модели. Возвращает None, если ответ испорчен и надо спросить другую модель."""
     raw_original = text or ""
     if not text:
@@ -292,6 +292,9 @@ def clean_ai_text(text, max_sentences, max_chars=None, finished=False, names=())
     sentences = re.findall(r"[^.!?]+[.!?]+", text)
     if not sentences:
         print(f"⚠️ [ФИЛЬТР] Ответ оборван, пробуем другую модель: {text}")
+        return None
+    if len(sentences) < min_sentences:
+        print(f"⚠️ [ФИЛЬТР] Слишком коротко ({len(sentences)} предл., нужно от {min_sentences}), просим заново: {text}")
         return None
     text = " ".join(x.strip() for x in sentences[:max_sentences])
     if len(text) < 15:
@@ -325,7 +328,7 @@ def ask_gemini(model_name, system_instruction, user_prompt):
     text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
     return text, cand.get("finishReason")
 
-def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_chars=None, names=()):
+def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_chars=None, names=(), min_sentences=1):
     system_instruction += "\nотвечай только на русском языке, без иностранных слов и иероглифов. не используй markdown, звездочки и списки."
 
     # 1. Сначала Gemini: лучше всех пишет по-русски
@@ -335,7 +338,7 @@ def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_c
                 try:
                     print(f"🤖 [GEMINI] Запрос к модели {model_name} (попытка {attempt + 1})...")
                     raw, finish = ask_gemini(model_name, system_instruction, user_prompt)
-                    text = clean_ai_text(raw, max_sentences, max_chars, finished=(finish == "STOP"), names=names)
+                    text = clean_ai_text(raw, max_sentences, max_chars, finished=(finish == "STOP"), names=names, min_sentences=min_sentences)
                     if text:
                         print(f"✅ [GEMINI УСПЕХ ({model_name})]: {text}")
                         return text
@@ -345,9 +348,9 @@ def generate_ai_response(system_instruction, user_prompt, max_sentences=2, max_c
                     break
 
     # 2. Запасной вариант: Groq
-    return generate_groq_response(system_instruction, user_prompt, max_sentences, max_chars, names)
+    return generate_groq_response(system_instruction, user_prompt, max_sentences, max_chars, names, min_sentences)
 
-def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max_chars=None, names=()):
+def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max_chars=None, names=(), min_sentences=1):
     if not groq_client:
         print("⚠️ [GROQ] Ключ GROQ_API_KEY отсутствует, возвращаем фолбэк.")
         return random.choice(FALLBACK_RESPONSES)
@@ -372,7 +375,7 @@ def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max
                     **extra,
                 )
                 choice = response.choices[0]
-                text = clean_ai_text(choice.message.content, max_sentences, max_chars, finished=(choice.finish_reason == "stop"), names=names)
+                text = clean_ai_text(choice.message.content, max_sentences, max_chars, finished=(choice.finish_reason == "stop"), names=names, min_sentences=min_sentences)
                 if text:
                     print(f"✅ [GROQ УСПЕХ ({model_name})]: {text}")
                     return text
@@ -821,11 +824,11 @@ def process_event_async(data):
             предскажи, {angle}.
             это первое знакомство: будь приветливой, никакого ворчания, язвительности, грубости и подколов, чтобы новичку захотелось остаться.
             твое настроение сейчас: {tone}.
-            строгое ограничение: твой ответ должен состоять максимум из 2 предложений.
+            напиши ровно 3 предложения: 1) тепло поприветствуй по имени и представься, 2) сделай предсказание про эту беседу, 3) пожелай чего-то хорошего или пригласи в общение.
             обращение строго на ты. {person_rule(user_name, user_sex, user_last)}
             """
-            usr_prompt = f"в беседу пришел новый участник по имени {user_name}, поприветствуй и сделай краткий расклад максимум в 2 предложения."
-            reply = generate_ai_response(sys_prompt, usr_prompt, names=(user_name, user_last))
+            usr_prompt = f"в беседу пришел новый участник по имени {user_name}, поприветствуй и сделай расклад про беседу в 3 предложениях."
+            reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=3, max_chars=450, names=(user_name, user_last), min_sentences=2)
             reply = fix_gender_words(reply, user_sex)
             reply = tag_person(reply, invited_id, (user_name, user_last))
             send_vk_message(peer_id, reply)
