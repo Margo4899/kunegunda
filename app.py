@@ -7,7 +7,13 @@ import requests
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# Лимиты обновляются в полночь по Москве (МСК = UTC+3, без перехода на летнее время)
+MSK = timezone(timedelta(hours=3))
+
+def msk_now():
+    return datetime.now(MSK)
 from flask import Flask, request
 from groq import Groq
 from supabase import create_client, Client
@@ -138,7 +144,7 @@ def _check_limit(user_id):
     if not supabase:
         print("⚠️ [SUPABASE] Клиент Supabase не инициализирован, пропускаем лимит.")
         return True
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = msk_now().strftime("%Y-%m-%d")
     try:
         print(f"📊 [SUPABASE] Проверка лимита для user_id={user_id}...")
         res = supabase.table("user_limits").select("*").eq("user_id", user_id).execute()
@@ -867,7 +873,7 @@ def check_and_mark_love(user_id):
     if str(user_id) in LIMIT_EXEMPT_IDS:
         print(f"🧪 [ТЕСТ] Лимит пары дня для user_id={user_id} отключен (LIMIT_EXEMPT_IDS).")
         return True
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = msk_now().strftime("%Y-%m-%d")
     if supabase:
         try:
             res = supabase.table("love_limits").select("*").eq("user_id", user_id).execute()
@@ -1125,7 +1131,7 @@ def process_event_async(data):
             3. твое настроение сейчас: {tone}. это должно быть сразу заметно.
             4. не больше {max_sent} коротких предложений, всего не больше {max_words} слов.
             5. смысл должен быть понятен с первого прочтения, без нагромождений.
-            5а. сегодня {datetime.now().strftime("%d.%m.%Y")}. если факт про акцию, праздник или событие, которое уже прошло (ярмарка, хэллоуин, день семьи, пятница 13, весенний пруд, золотая осень и т.п.), гадай про следующее такое же событие: например после 10-й ярмарки будет 11-я, после прошлого хэллоуина будет следующий. предположи, что там будет похожее, как опытная гадалка.
+            5а. сегодня {msk_now().strftime("%d.%m.%Y")}. если факт про акцию, праздник или событие, которое уже прошло (ярмарка, хэллоуин, день семьи, пятница 13, весенний пруд, золотая осень и т.п.), гадай про следующее такое же событие: например после 10-й ярмарки будет 11-я, после прошлого хэллоуина будет следующий. предположи, что там будет похожее, как опытная гадалка.
             5б. это предсказание о будущем: не утверждай, что игрок уже что-то сделал. не придумывай нелепых деталей, которых нет в факте (никаких салатов, отверток и т.п.).
             6. обращайся на ты. {person_rule(name, sex, last_name)}{lore_rule}
             {avoid_repeats_rule(from_id)}
