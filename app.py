@@ -267,6 +267,20 @@ def pick_fresh(kind, options, keep=5):
     recent.append(pick)
     return pick
 
+LORE_EMOJIS = ["🪶", "🕯", "🐚", "🦜", "🍵", "🌴", "🔮"]
+
+def lore_phrase(lore):
+    """Короткая фраза Кунегунды о себе (отдельным абзацем после гадания)."""
+    sys_prompt = SYSTEM_PROMPT_BASE + f"""
+            перескажи этот факт о себе от первого лица (я...), одной короткой живой фразой, как будто между делом делишься с собеседником:
+            {lore}
+            не больше 20 слов, без предсказаний, только о себе.
+            """
+    text = generate_ai_response(sys_prompt, "расскажи что-нибудь о себе.", max_sentences=2, max_chars=200)
+    if not text or text in FALLBACK_RESPONSES:
+        return ""
+    return f"{random.choice(LORE_EMOJIS)} {text}"
+
 # Необычные форматы предсказания (иногда), чтобы было оригинальнее
 FORTUNE_FORMATS = [
     "в виде прогноза погоды на завтра",
@@ -1069,10 +1083,6 @@ def process_event_async(data):
 
             lore_rule = ""
             max_sent, max_len, max_words = 2, 220, 25
-            if lore:
-                lore_rule = f"""
-            7. в этот раз вскользь, одной отдельной короткой фразой от первого лица (я...), расскажи о себе: {lore}. это про тебя, кунегунду, а не про собеседника, и не смешивай это с предсказанием. предсказание все равно про факт выше."""
-                max_sent, max_len, max_words = 3, 300, 35
 
             sys_prompt = SYSTEM_PROMPT_BASE + f"""
             предсказание делается про игру аватария, строго про одну тему:
@@ -1096,6 +1106,10 @@ def process_event_async(data):
             reply = fix_gender_words(reply, sex)
             remember_reply(from_id, reply)
             reply = tag_person(reply, from_id, (name, last_name))
+            if lore:
+                about_me = lore_phrase(lore)
+                if about_me:
+                    reply += "\n\n" + about_me
             reply += remaining_note(from_id)
             if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, reply)):
                 send_vk_message(peer_id, reply, reply_to_cmid=cmid)
