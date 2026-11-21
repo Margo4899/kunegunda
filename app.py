@@ -400,6 +400,13 @@ def generate_groq_response(system_instruction, user_prompt, max_sentences=2, max
 
 # --- 4. ВЗАИМОДЕЙСТВИЕ С VK API 5.199 ---
 _user_cache = {}
+_screen_names = {}
+
+def get_screen_name(user_id):
+    """Юзернейм ВК (например igor_petrov или id123)."""
+    if user_id not in _screen_names:
+        get_vk_user_full(user_id)
+    return _screen_names.get(user_id) or f"id{user_id}"
 
 def get_vk_user(user_id):
     """Имя и пол из профиля ВК: (имя, 'f' / 'm' / None). Пол ВК: 1 женский, 2 мужской, 0 не указан."""
@@ -432,13 +439,14 @@ def get_vk_user_full(user_id):
         return name, None, None
     try:
         res = requests.get("https://api.vk.com/method/users.get", params={
-            "user_ids": user_id, "fields": "sex",
+            "user_ids": user_id, "fields": "sex,screen_name",
             "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
         }, timeout=15).json()
         if res.get("response"):
             u = res["response"][0]
             name = u.get("first_name") or None
             last = u.get("last_name") or None
+            _screen_names[user_id] = u.get("screen_name") or f"id{user_id}"
             sex = {1: "f", 2: "m"}.get(u.get("sex"))
         elif "error" in res:
             print(f"⚠️ [ВК ОШИБКА ИМЕНИ]: {res['error'].get('error_msg')}")
@@ -547,17 +555,42 @@ def mention(user_id, text):
         return text
     return f"[id{user_id}|{text}]"
 
-def tag_person(reply, user_id, names):
+INTERJECTIONS = {"ох", "ах", "эх", "ну", "ой", "ух", "хм", "так", "вот", "ладно", "итак", "привет", "здравствуй",
+    "слушай", "милый", "милая", "милые", "родной", "родная", "дорогой", "дорогая", "солнце", "звезда", "ага", "фу",
+    "эй", "о", "а", "да", "нет", "хорошо", "смотри", "знаешь", "погоди", "тише", "мда", "ха", "хаха", "ого", "уф"}
+
+def _name_match(word, names):
+    """Похоже ли слово на имя (или его форму: Данил -> Данечка). Для коротких имен нужно точное совпадение."""
+    w = word.lower()
+    for n in names:
+        if not n:
+            continue
+        n = n.strip().lower()
+        if len(n) < 3:
+            if w == n:
+                return True
+        elif w[:3] == n[:3]:
+            return True
+    return False
+
+def tag_person(reply, user_id, names, label=None, prepend=True):
     """Делает первое обращение к человеку в ответе отметкой (синей ссылкой).
-    Ищет имя или его форму (Данил, Данечка...), если не нашла, ставит отметку в начало."""
+    Ищет имя или его форму (Данил, Данечка), иначе первое слово перед запятой (ник, переделанный моделью).
+    label: что показать в ссылке вместо найденного слова (например @юзернейм)."""
     if not user_id or not reply:
         return reply
-    stems = {n.strip().lower()[:3] for n in names if n and len(n.strip()) >= 3}
-    for m in re.finditer(r"[А-ЯЁA-Z][а-яёa-z]+", reply):
-        if m.group(0).lower()[:3] in stems:
-            return reply[:m.start()] + mention(user_id, m.group(0)) + reply[m.end():]
     first = next((n for n in names if n), None)
-    return f"{mention(user_id, first)}, {reply}" if first else reply
+    for m in re.finditer(r"[А-ЯЁA-Zа-яёa-z][А-ЯЁA-Zа-яёa-z0-9_]*", reply):
+        if _name_match(m.group(0), names):
+            shown = m.group(0) if m.group(0)[0].isupper() else (first or m.group(0))
+            return reply[:m.start()] + mention(user_id, label or shown) + reply[m.end():]
+    # ответ начинается с обращения "микола," — модель переделала ник, заменяем это слово на отметку
+    m = re.match(r"^([^\s,.!?]{1,25}),", reply)
+    if m and first and m.group(1).lower() not in INTERJECTIONS:
+        return mention(user_id, label or first) + reply[m.end(1):]
+    if not prepend or not first:
+        return reply
+    return f"{mention(user_id, label or first)}, {reply}"
 
 THINKING_PHRASES = [
     "🔮 {name}смотрю в шар, погоди минутку...",
@@ -793,7 +826,7 @@ def handle_love(peer_id, from_id, cmid):
             факт: {fact}
 
             правила:
-            1. упомяни оба имени, имена пиши с большой буквы.
+            1. упомяни оба имени ровно один раз каждое, имена пиши с большой буквы. не пиши фразу вроде пара дня это, сразу переходи к предсказанию.
             2. только невинная романтика в игре: симпатия, прогулка, танец, подарок, свидание в игре, игровая свадьба. ничего взрослого.
             3. твое настроение сейчас: {tone}. но к паре по-доброму, никого не высмеивай.
             4. не больше 2 коротких предложений, не больше 35 слов.
@@ -801,8 +834,16 @@ def handle_love(peer_id, from_id, cmid):
             """
     reply = generate_ai_response(sys_prompt, "найди нам пару дня.", max_sentences=2, max_chars=300,
                                  names=(name, last_name, pname, plast))
-    partner_tag = pname if npc else mention(pid, pname or 'кто-то')
-    text = f"💘 пара дня: {mention(from_id, name or 'ты')} + {partner_tag}\n{reply}"
+    reply = tag_person(reply, from_id, (name, last_name), prepend=False)
+    if not npc:
+        reply = tag_person(reply, pid, (pname, plast), prepend=False)
+    me_tagged = mention(from_id, "x").split("|")[0] in reply if from_id > 0 else (name or "") in reply
+    partner_tagged = npc or mention(pid, "x").split("|")[0] in reply
+    if me_tagged and partner_tagged:
+        text = f"💘 пара дня\n{reply}"
+    else:
+        partner_tag = pname if npc else mention(pid, pname or 'кто-то')
+        text = f"💘 пара дня: {mention(from_id, name or 'ты')} + {partner_tag}\n{reply}"
     if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, text)):
         send_vk_message(peer_id, text, reply_to_cmid=cmid)
 
@@ -862,7 +903,8 @@ def process_event_async(data):
             usr_prompt = f"в беседу пришел новый участник по имени {user_name}, поприветствуй и сделай расклад про беседу в 3 предложениях."
             reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=3, max_chars=450, names=(user_name, user_last), min_sentences=2)
             reply = fix_gender_words(reply, user_sex)
-            reply = tag_person(reply, invited_id, (user_name, user_last))
+            label = f"@{get_screen_name(invited_id)}" if invited_id > 0 else None
+            reply = tag_person(reply, invited_id, (user_name, user_last), label=label)
             send_vk_message(peer_id, reply)
             return
 
@@ -903,7 +945,7 @@ def process_event_async(data):
             max_sent, max_len, max_words = 2, 220, 25
             if lore:
                 lore_rule = f"""
-            7. в этот раз вскользь, одной короткой фразой, упомяни что-то о себе: {lore}. это просто личная деталь, предсказание все равно про факт выше."""
+            7. в этот раз вскользь, одной короткой фразой от первого лица (я...), расскажи о себе: {lore}. это про тебя, кунегунду, а не про собеседника. предсказание все равно про факт выше."""
                 max_sent, max_len, max_words = 3, 300, 35
 
             sys_prompt = SYSTEM_PROMPT_BASE + f"""
