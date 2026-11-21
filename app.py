@@ -663,6 +663,39 @@ def check_and_mark_love(user_id):
     love_used[user_id] = today
     return True
 
+_chat_titles = {}
+
+def get_chat_title(peer_id):
+    """Название беседы из ВК (кэшируется). None, если не удалось."""
+    if peer_id in _chat_titles:
+        return _chat_titles[peer_id]
+    title = None
+    try:
+        res = requests.post("https://api.vk.com/method/messages.getConversationsById", data={
+            "peer_ids": peer_id, "access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION
+        }, timeout=20).json()
+        items = (res.get("response") or {}).get("items") or []
+        if items:
+            title = (items[0].get("chat_settings") or {}).get("title")
+        elif "error" in res:
+            print(f"⚠️ [ВК] Не удалось узнать название беседы: {res['error'].get('error_msg')}")
+    except Exception as e:
+        print(f"⚠️ [ВК] Ошибка названия беседы: {e}")
+    print(f"💬 [БЕСЕДА] {peer_id}: {title or 'название неизвестно'}")
+    if title:
+        _chat_titles[peer_id] = title
+    return title
+
+GREETING_ANGLES = [
+    "с кем новичок здесь подружится",
+    "какие веселые игры и розыгрыши ждут его в этой беседе",
+    "какие смешные моменты и мемы ему здесь предстоят",
+    "как беседа станет ему вторым домом",
+    "какие приключения в аватарии он найдет вместе с участниками",
+    "какая уютная атмосфера и душевные разговоры его тут ждут",
+    "как он станет здесь своим и звездой беседы",
+]
+
 def get_chat_members(peer_id):
     """Люди в беседе: [(id, имя, фамилия, пол)]. Нужно, чтобы бот был админом беседы."""
     try:
@@ -777,8 +810,15 @@ def process_event_async(data):
             user_name = user_name or "новичок"
             tone = pick_tone(friendly_only=True)
             print(f"🎭 [ТОН ПРИВЕТСТВИЯ] {tone}")
+            chat_title = get_chat_title(peer_id)
+            angle = random.choice(GREETING_ANGLES)
+            chat_info = (f"беседа называется: {chat_title}. по названию пойми, что это за беседа (общалка, клуб, беседа друзей, тематическая и т.п.), "
+                         f"и назови ее в ответе естественно, своими словами или по названию."
+                         if chat_title else "название беседы неизвестно, говори просто про эту беседу.")
             sys_prompt = SYSTEM_PROMPT_BASE + f"""
-            представься как гадалка кунегунда, назови нового участника по имени и сделай ему позитивный расклад про эту беседу.
+            представься как гадалка кунегунда, назови нового участника по имени и сделай ему крутое позитивное предсказание именно про эту беседу.
+            {chat_info}
+            предскажи, {angle}.
             это первое знакомство: будь приветливой, никакого ворчания, язвительности, грубости и подколов, чтобы новичку захотелось остаться.
             твое настроение сейчас: {tone}.
             строгое ограничение: твой ответ должен состоять максимум из 2 предложений.
