@@ -218,6 +218,18 @@ recent_facts_global = []
 NEW_SECTION_WORDS = ("новинки", "мини-игры и их билеты", "праздники, ярмарка", "локации и интересные", "творчество игроков", "игровые боты")
 NEW_FACT_CHANCE = 0.5
 
+def split_list_fact(fact):
+    """Факт-список: в knowledge.txt ключ начинается со *, а пункты идут через |.
+    Пример: '*Приколы: Описание. | бомбочка | отвертка'. Возвращает (описание, один случайный пункт)."""
+    if not fact.startswith("*"):
+        return fact, None
+    fact = fact[1:]
+    parts = [p.strip() for p in fact.split("|")]
+    if len(parts) < 3:
+        return parts[0], None
+    key = parts[0].split(":", 1)[0]
+    return parts[0], pick_fresh("item:" + key, parts[1:], keep=max(1, (len(parts) - 1) // 2))
+
 def pick_fact(user_id):
     """Случайный факт, который этот игрок недавно не получал и который не выпадал в последних гаданиях."""
     seen = recent_facts_by_user.setdefault(user_id, [])
@@ -945,7 +957,8 @@ def handle_love(peer_id, from_id, cmid):
         about = f"сюжет: {scenario}."
     else:
         topic, fact = random.choice(love_facts())
-        about = f"связано с этим фактом из игры:\n            тема: {topic}\n            факт: {fact}"
+        fact, focus = split_list_fact(fact)
+        about = f"связано с этим фактом из игры:\n            тема: {topic}\n            факт: {fact}" + (f"\n            главное: {focus}, остальное из факта не упоминай." if focus else "")
     print(f"💘 [ПАРА ДНЯ] {name} + {pname} | {about} | стиль: {style} | тон: {tone}")
 
     def who(n, sx):
@@ -1071,6 +1084,7 @@ def process_event_async(data):
             placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
 
             topic, fact = pick_fact(from_id)
+            fact, focus = split_list_fact(fact)
             mood = pick_fresh("mood", FORTUNE_MOODS, keep=4)
             if random.random() < NPC_SHIP_CHANCE:
                 npc = pick_fresh("npc", GAME_NPCS, keep=8)
@@ -1078,7 +1092,7 @@ def process_event_async(data):
             tone = pick_tone()
             lore = pick_fresh("lore", KUNEGUNDA_LORE, keep=20) if KUNEGUNDA_LORE and random.random() < LORE_CHANCE else None
             fmt = pick_fresh("format", FORTUNE_FORMATS, keep=6) if random.random() < FORMAT_CHANCE else None
-            print(f"📚 [ФАКТ] {topic}: {fact}")
+            print(f"📚 [ФАКТ] {topic}: {fact}" + (f" | главное: {focus}" if focus else ""))
             print(f"🎭 [ТОН] {tone} | о чем: {mood} | о себе: {lore or 'нет'} | формат: {fmt or 'обычный'}")
 
             lore_rule = ""
@@ -1088,6 +1102,8 @@ def process_event_async(data):
             предсказание делается про игру аватария, строго про одну тему:
             тема: {topic}
             факт: {fact}
+
+            {("главное в этот раз: " + focus + ". гадай только про это, остальное из списка не упоминай.") if focus else ""}
 
             как писать предсказание:
             1. только про этот факт. {NO_MIXING_RULE} не придумывай новые предметы.
