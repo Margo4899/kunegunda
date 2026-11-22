@@ -1115,16 +1115,16 @@ def process_event_async(data):
 
             # 1) короткое приветствие и представление
             hello_prompt = SYSTEM_PROMPT_BASE + f"""
-            в беседу пришел новичок. напиши ровно 2 коротких теплых предложения:
+            в беседу пришел новичок. напиши ровно 2 очень коротких теплых предложения, в каждом не больше 12 слов:
             1) поприветствуй его по имени и обязательно упомяни саму беседу, куда он пришел;
             2) представься и немного расскажи, откуда ты: ты гадалка кунегунда, долго жила в пещерах тропикании
-               и вылезла к людям, чтобы помогать им своими магическими силами (можно добавить одну живую деталь о себе своими словами).
+               и вылезла к людям, чтобы помогать им своими магическими силами.
             {chat_info}
             никаких предсказаний, советов и пожеланий в этих предложениях.
             это первое знакомство: будь приветливой, никакого ворчания и подколов. обращение на ты. {who}
             """
             hello = generate_ai_response(hello_prompt, f"новичка зовут {user_name}, поприветствуй, упомяни беседу и расскажи, кто ты и откуда.",
-                                         max_sentences=2, max_chars=320, names=(user_name, user_last), min_sentences=2)
+                                         max_sentences=2, max_chars=200, names=(user_name, user_last), min_sentences=2)
             hello = fix_gender_words(hello, user_sex)
             label = f"@{get_screen_name(invited_id)}" if invited_id > 0 else None
             hello = tag_person(hello, invited_id, (user_name, user_last), label=label)
@@ -1139,11 +1139,11 @@ def process_event_async(data):
             предсказание должно быть конкретным и необычным, привязанным к этому факту, с маленькой забавной деталью.
             запрещены банальности: найдешь друзей, пообщайся, тебе тут понравится, станешь своим, уютная атмосфера.
             твое настроение сейчас: {tone}. по-доброму, без ворчания и подколов.
-            ровно 2 предложения, обращение на ты, имя не пиши. {who}
+            одно-два коротких предложения, всего не больше 22 слов. обращение на ты, имя не пиши. {who}
             {avoid_repeats_rule(invited_id)}
             """
             fortune = generate_ai_response(fortune_prompt, "сделай новичку приветственное гадание.",
-                                           max_sentences=2, max_chars=320, names=(user_name, user_last), min_sentences=2)
+                                           max_sentences=2, max_chars=170, names=(user_name, user_last))
             fortune = fix_gender_words(fortune, user_sex)
             remember_reply(invited_id, fortune)
             ritual = random.choice(NEWCOMER_RITUALS)
