@@ -600,11 +600,16 @@ MALE_A_NAMES = {"никита", "илья", "кузьма", "фома", "лук�
 FEMALE_SOFT_NAMES = {"любовь", "нинель", "адель", "ассоль", "рахиль", "эсфирь", "даниэль", "габриэль", "мариэль", "николь"}
 NEUTRAL_NAMES = {"мишель", "саша", "женя", "валя", "слава", "шура", "саня", "сашка", "женька", }
 
+# Ники, про которых точно известно, что это девушки (например "Кс Кс")
+FEMALE_NICKS = {"кс", "кс кс"}
+
 def sex_from_name(name):
     """'m' / 'f' / None по имени. None, если имя неоднозначное или похоже на ник."""
     if not name:
         return None
     n = name.strip().lower()
+    if n in FEMALE_NICKS:
+        return "f"
     if not re.fullmatch(r"[а-яё]+(-[а-яё]+)?", n):
         return None  # ник на латинице, с цифрами и т.п.
     if n in NEUTRAL_NAMES:
@@ -621,6 +626,8 @@ def sex_from_name(name):
 
 def resolve_sex(name, profile_sex):
     """Сначала пол по имени (как в нике), если не понятно, то из профиля ВК."""
+    if name and name.strip().lower() in FEMALE_NICKS:
+        return "f"
     if name and " " in name.strip():
         return profile_sex  # название из нескольких слов (например бот-сообщество), по нему пол не понять
     return sex_from_name(name) or profile_sex
