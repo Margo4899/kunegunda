@@ -242,6 +242,7 @@ def pick_fact(user_id):
     n = len(AVATARIA_FACTS)
     blocked = set(seen) | set(recent_facts_global)
     choices = [i for i in range(n) if i not in blocked] or [i for i in range(n) if i not in seen] or list(range(n))
+    choices = without_hot(choices, CURRENT_HOT["themes"], key=lambda i: AVATARIA_FACTS[i][0] + " " + AVATARIA_FACTS[i][1])
     recent_sections = {AVATARIA_FACTS[j][0] for j in recent_facts_global[-3:]}
     other_sections = [i for i in choices if AVATARIA_FACTS[i][0] not in recent_sections]
     if other_sections:
@@ -260,6 +261,7 @@ def pick_fact(user_id):
 from collections import deque
 RECENT_REPLIES = deque(maxlen=12)          # последние ответы Кунегунды (все беседы)
 RECENT_BY_USER = {}                        # user_id -> последние ответы этому человеку
+CURRENT_HOT = {"themes": []}               # темы, которые сейчас не трогаем
 _recent_picks = {}                         # "lore"/"npc"/"format"/... -> последние выбранные варианты
 
 def remember_reply(user_id, text):
@@ -270,12 +272,39 @@ def remember_reply(user_id, text):
 def avoid_repeats_rule(user_id):
     """Подсказка модели: что уже было сказано недавно, чтобы не повторять."""
     items = list(RECENT_BY_USER.get(user_id, [])) + [r for r in list(RECENT_REPLIES)[-6:] if r not in RECENT_BY_USER.get(user_id, [])]
+    rule = themes_rule(CURRENT_HOT.get("themes", []))
     if not items:
-        return ""
+        return rule
     lines = "\n".join(f"- {x[:160]}" for x in items[-8:])
     return f"""
             недавно ты уже говорила вот это (не повторяй эти идеи, образы, сюжеты и обороты, придумай что-то совсем новое):
-{lines}"""
+{lines}""" + rule
+
+# Темы, которые модель любит слишком часто. Если тема была в недавних ответах,
+# на время убираем ее из фактов, лора и ботов и прямо просим о ней не говорить.
+THEMES = {
+    "охранник у VIP-входа": r"охран",
+    "горнолыжный курорт, лыжи и сноуборд": r"горнолыж|лыж|курорт|сноуборд|спуск",
+}
+THEME_COOLDOWN = 10   # сколько последних ответов (по всем беседам) проверяем
+THEME_BASE_BLOCK = 0.7  # даже если темы давно не было, чаще всего все равно ее не даем
+
+def hot_themes():
+    recent = " ".join(list(RECENT_REPLIES)[-THEME_COOLDOWN:]).lower()
+    return [t for t, rx in THEMES.items() if re.search(rx, recent) or random.random() < THEME_BASE_BLOCK]
+
+def blocked_by_themes(text, themes):
+    t = (text or "").lower()
+    return any(re.search(THEMES[x], t) for x in themes)
+
+def without_hot(items, themes, key=lambda x: x):
+    kept = [x for x in items if not blocked_by_themes(key(x), themes)]
+    return kept or items
+
+def themes_rule(themes):
+    if not themes:
+        return ""
+    return "\n            не упоминай в этот раз: " + "; ".join(themes) + "."
 
 def pick_fresh(kind, options, keep=5):
     """Случайный вариант, который не выпадал в последние keep раз."""
@@ -828,7 +857,8 @@ love_used = {}  # user_id -> дата, когда уже искали пару (
 LOVE_KEYWORDS = ("свад", "отношен", "влюб", "любв", "любов", "сердц", "супруг", "семь", "романт", "пар", "танц", "подар", "приятел", "друз")
 
 def love_facts():
-    return [f for f in AVATARIA_FACTS if any(k in (f[0] + " " + f[1]).lower() for k in LOVE_KEYWORDS)] or AVATARIA_FACTS
+    facts = [f for f in AVATARIA_FACTS if any(k in (f[0] + " " + f[1]).lower() for k in LOVE_KEYWORDS)] or AVATARIA_FACTS
+    return without_hot(facts, CURRENT_HOT["themes"], key=lambda f: f[0] + " " + f[1])
 
 # Смешные и милые сюжеты для пары дня (берется один, не повторяется подряд)
 LOVE_SCENARIOS = [
@@ -970,7 +1000,8 @@ def handle_love(peer_id, from_id, cmid):
     thinking = random.choice(LOVE_THINKING).format(name=f"{who_tag}, " if name else "")
     placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
 
-    npc = random.choice(GAME_NPCS) if random.random() < NPC_PAIR_CHANCE else None
+    CURRENT_HOT["themes"] = hot_themes()
+    npc = random.choice(without_hot(GAME_NPCS, CURRENT_HOT["themes"])) if random.random() < NPC_PAIR_CHANCE else None
     if npc:
         pid, pname, plast, psex = None, npc, None, None
     else:
@@ -1109,14 +1140,17 @@ def process_event_async(data):
             thinking = random.choice(THINKING_PHRASES).format(name=f"{mention(from_id, name)}, " if name else "")
             placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
 
+            CURRENT_HOT["themes"] = hot_themes()
+            if CURRENT_HOT["themes"]:
+                print(f"🚫 [ТЕМЫ] пока не трогаем: {', '.join(CURRENT_HOT['themes'])}")
             topic, fact = pick_fact(from_id)
             fact, focus = split_list_fact(fact)
             mood = pick_fresh("mood", FORTUNE_MOODS, keep=4)
             if random.random() < NPC_SHIP_CHANCE:
-                npc = pick_fresh("npc", GAME_NPCS, keep=8)
+                npc = pick_fresh("npc", without_hot(GAME_NPCS, CURRENT_HOT["themes"]), keep=8)
                 mood = f"шуточный роман (шип) с игровым ботом: {npc}. по-доброму и смешно, связав это с фактом"
             tone = pick_tone()
-            lore = pick_fresh("lore", KUNEGUNDA_LORE, keep=20) if KUNEGUNDA_LORE and random.random() < LORE_CHANCE else None
+            lore = pick_fresh("lore", without_hot(KUNEGUNDA_LORE, CURRENT_HOT["themes"]), keep=20) if KUNEGUNDA_LORE and random.random() < LORE_CHANCE else None
             fmt = pick_fresh("format", FORTUNE_FORMATS, keep=6) if random.random() < FORMAT_CHANCE else None
             print(f"📚 [ФАКТ] {topic}: {fact}" + (f" | главное: {focus}" if focus else ""))
             print(f"🎭 [ТОН] {tone} | о чем: {mood} | о себе: {lore or 'нет'} | формат: {fmt or 'обычный'}")
