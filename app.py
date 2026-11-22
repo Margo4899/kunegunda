@@ -845,6 +845,15 @@ BOT_HELP_TEXT = """✨ что я умею:
 
 ⚠️ чтобы я видела все ваши сообщения, сделайте меня администратором беседы."""
 
+# Чем Кунегунда начинает приветственное гадание
+NEWCOMER_RITUALS = [
+    "🔮 по старой традиции гадаю новичку на удачу...",
+    "🃏 вытягиваю для тебя первую карту...",
+    "✨ заглядываю в шар, что он покажет про тебя...",
+    "🕯 зажигаю свечу для нового гостя и смотрю...",
+    "☕ гадаю тебе на кофейной гуще с порога...",
+]
+
 # Короткая подсказка новичку отдельным абзацем
 NEWCOMER_HELP = """🃏 напиши «гадать», и я сделаю тебе предсказание (до 3 в день).
 💘 напиши «суженый» или «суженая», и я найду тебе пару дня в беседе."""
@@ -1100,24 +1109,42 @@ def process_event_async(data):
             tone = pick_tone(friendly_only=True)
             print(f"🎭 [ТОН ПРИВЕТСТВИЯ] {tone}")
             chat_title = get_chat_title(peer_id)
-            angle = random.choice(GREETING_ANGLES)
-            chat_info = (f"беседа называется: {chat_title}. по названию пойми, что это за беседа (общалка, клуб, беседа друзей, тематическая и т.п.), "
-                         f"и назови ее в ответе естественно, своими словами или по названию."
+            chat_info = (f"беседа называется: {chat_title}. можешь назвать ее естественно, своими словами или по названию."
                          if chat_title else "название беседы неизвестно, говори просто про эту беседу.")
-            sys_prompt = SYSTEM_PROMPT_BASE + f"""
-            представься как гадалка кунегунда, назови нового участника по имени и сделай ему крутое позитивное предсказание именно про эту беседу.
+            who = person_rule(user_name, user_sex, user_last, allow_play=False)
+
+            # 1) короткое приветствие и представление
+            hello_prompt = SYSTEM_PROMPT_BASE + f"""
+            в беседу пришел новичок. поприветствуй его по имени и коротко представься: ты гадалка кунегунда.
             {chat_info}
-            предскажи, {angle}.
-            это первое знакомство: будь приветливой, никакого ворчания, язвительности, грубости и подколов, чтобы новичку захотелось остаться.
-            твое настроение сейчас: {tone}.
-            напиши ровно 3 предложения: 1) тепло поприветствуй по имени и представься, 2) сделай предсказание про эту беседу, 3) пожелай чего-то хорошего или пригласи в общение.
-            обращение строго на ты. {person_rule(user_name, user_sex, user_last)}
+            ровно одно короткое теплое предложение, до 20 слов. никаких предсказаний, советов и пожеланий в этом предложении.
+            это первое знакомство: будь приветливой, никакого ворчания и подколов. обращение на ты. {who}
             """
-            usr_prompt = f"в беседу пришел новый участник по имени {user_name}, поприветствуй и сделай расклад про беседу в 3 предложениях."
-            reply = generate_ai_response(sys_prompt, usr_prompt, max_sentences=3, max_chars=450, names=(user_name, user_last), min_sentences=2)
-            reply = fix_gender_words(reply, user_sex)
+            hello = generate_ai_response(hello_prompt, f"новичка зовут {user_name}, поприветствуй и представься.",
+                                         max_sentences=1, max_chars=200, names=(user_name, user_last))
+            hello = fix_gender_words(hello, user_sex)
             label = f"@{get_screen_name(invited_id)}" if invited_id > 0 else None
-            reply = tag_person(reply, invited_id, (user_name, user_last), label=label)
+            hello = tag_person(hello, invited_id, (user_name, user_last), label=label)
+
+            # 2) настоящее приветственное гадание, как обычное предсказание
+            topic, fact = pick_fact(invited_id)
+            fact, focus = split_list_fact(fact)
+            print(f"📚 [ФАКТ НОВИЧКУ] {topic}: {fact}")
+            fortune_prompt = SYSTEM_PROMPT_BASE + f"""
+            сделай новичку приветственное гадание, как настоящее предсказание из шара: что именно с ним случится в аватарии в ближайшие дни.
+            тема гадания: {topic}. факт из игры: {fact}{f" (главное: {focus})" if focus else ""}.
+            предсказание должно быть конкретным и необычным, привязанным к этому факту, с маленькой забавной деталью.
+            запрещены банальности: найдешь друзей, пообщайся, тебе тут понравится, станешь своим, уютная атмосфера.
+            твое настроение сейчас: {tone}. по-доброму, без ворчания и подколов.
+            ровно 2 предложения, обращение на ты, имя не пиши. {who}
+            {avoid_repeats_rule(invited_id)}
+            """
+            fortune = generate_ai_response(fortune_prompt, "сделай новичку приветственное гадание.",
+                                           max_sentences=2, max_chars=320, names=(user_name, user_last), min_sentences=2)
+            fortune = fix_gender_words(fortune, user_sex)
+            remember_reply(invited_id, fortune)
+            ritual = random.choice(NEWCOMER_RITUALS)
+            reply = f"{hello}\n\n{ritual}\n{fortune}"
             reply += "\n\n" + NEWCOMER_HELP
             send_vk_message(peer_id, reply)
             return
