@@ -845,6 +845,10 @@ BOT_HELP_TEXT = """✨ что я умею:
 
 ⚠️ чтобы я видела все ваши сообщения, сделайте меня администратором беседы."""
 
+# Короткая подсказка новичку отдельным абзацем
+NEWCOMER_HELP = """🃏 напиши «гадать», и я сделаю тебе предсказание (до 3 в день).
+💘 напиши «суженый» или «суженая», и я найду тебе пару дня в беседе."""
+
 LOVE_WORDS = ("суженый", "суженая", "суженного", "суженую")
 
 def is_love_command(text):
@@ -1074,7 +1078,7 @@ def process_event_async(data):
 
         # 1. Приглашение в беседу
         if action.get('type') in ['chat_invite_user', 'chat_invite_user_by_link']:
-            invited_id = action.get('member_id', 0)
+            invited_id = action.get('member_id') or from_id or 0  # по ссылке member_id нет, пришедший = автор события
             print(f"🎉 [СОБЫТИЕ] Добавлен участник: invited_id={invited_id}")
 
             if invited_id < 0:
@@ -1114,6 +1118,7 @@ def process_event_async(data):
             reply = fix_gender_words(reply, user_sex)
             label = f"@{get_screen_name(invited_id)}" if invited_id > 0 else None
             reply = tag_person(reply, invited_id, (user_name, user_last), label=label)
+            reply += "\n\n" + NEWCOMER_HELP
             send_vk_message(peer_id, reply)
             return
 
