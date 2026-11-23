@@ -285,13 +285,26 @@ def avoid_repeats_rule(user_id):
 THEMES = {
     "охранник у VIP-входа": r"охран",
     "горнолыжный курорт, лыжи и сноуборд": r"горнолыж|лыж|курорт|сноуборд|спуск",
+    "повар, кулинария, пирожки и выпечка": r"повар|кулинар|пирож|пирог|выпечк",
+    "лемур": r"лемур",
+    "жабулька": r"жабул",
+    "пираты джон крюк и мэри рид": r"пират|крюк|мэри",
+    "диджей": r"диджей|dj",
+    "официантка и кафе": r"официант|кафе",
+    "салон красоты": r"салон",
+    "алиса и зоомагазин": r"алис|зоомагаз",
+    "приятели саша и маша": r"\bсаш|\bмаш",
 }
 THEME_COOLDOWN = 10   # сколько последних ответов (по всем беседам) проверяем
-THEME_BASE_BLOCK = 0.7  # даже если темы давно не было, чаще всего все равно ее не даем
+THEME_BASE_BLOCK = 0.75  # даже если темы давно не было, чаще всего все равно ее не даем
+
+def recent_themes():
+    recent = " ".join(list(RECENT_REPLIES)[-THEME_COOLDOWN:]).lower()
+    return [t for t, rx in THEMES.items() if re.search(rx, recent)]
 
 def hot_themes():
-    recent = " ".join(list(RECENT_REPLIES)[-THEME_COOLDOWN:]).lower()
-    return [t for t, rx in THEMES.items() if re.search(rx, recent) or random.random() < THEME_BASE_BLOCK]
+    recent = recent_themes()
+    return [t for t in THEMES if t in recent or random.random() < THEME_BASE_BLOCK]
 
 def blocked_by_themes(text, themes):
     t = (text or "").lower()
@@ -299,12 +312,38 @@ def blocked_by_themes(text, themes):
 
 def without_hot(items, themes, key=lambda x: x):
     kept = [x for x in items if not blocked_by_themes(key(x), themes)]
-    return kept or items
+    if kept:
+        return kept
+    # если под запрет попало всё, убираем хотя бы то, что звучало совсем недавно
+    return [x for x in items if not blocked_by_themes(key(x), recent_themes())] or items
+
+REPEAT_STOPWORDS = set("""
+тебя тебе твой твоя твое твои который которая которые будет будут очень может чтобы когда потом
+только своей своим свою этот этого этой этом какой какая какие здесь сегодня завтра скоро будешь
+станешь кунегунда кунегунды карты карта предсказание гадание судьба судьбы вижу видит говорят
+""".split())
+
+def overused_words():
+    """Слова, которые встретились в 3 и больше из последних 10 ответов: просим их не повторять."""
+    counts, sample = {}, {}
+    for r in list(RECENT_REPLIES)[-10:]:
+        stems = {}
+        for w in re.findall(r"[а-яё]{5,}", r.lower()):
+            if w not in REPEAT_STOPWORDS:
+                stems.setdefault(w[:5], w)   # корень ~ первые 5 букв: повар/повара/поваром
+        for st, w in stems.items():
+            counts[st] = counts.get(st, 0) + 1
+            sample.setdefault(st, w)
+    return [sample[st] for st, c in sorted(counts.items(), key=lambda x: -x[1]) if c >= 3][:12]
 
 def themes_rule(themes):
-    if not themes:
-        return ""
-    return "\n            не упоминай в этот раз: " + "; ".join(themes) + "."
+    rule = ""
+    if themes:
+        rule += "\n            не упоминай в этот раз: " + "; ".join(themes) + "."
+    words = overused_words()
+    if words:
+        rule += "\n            эти слова ты в последнее время говорила слишком часто, не используй их и их однокоренные: " + ", ".join(words) + "."
+    return rule
 
 def pick_fresh(kind, options, keep=5):
     """Случайный вариант, который не выпадал в последние keep раз."""
