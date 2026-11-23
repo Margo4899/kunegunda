@@ -455,6 +455,31 @@ GAME_NPCS = list(NPC_INFO)
 def npc_desc(name):
     info = NPC_INFO.get(name)
     return f"{name} ({info})" if info else name
+# Пара дня без пары: одиночество, неживой предмет и т.п.
+LOVE_TWIST_CHANCE = 0.15
+LOVE_TWISTS = ["object", "object", "alone", "self", "later", "overheat", "everyone"]
+LOVE_TWIST_HEADERS = {
+    "alone": "💔 пара дня: не найдена",
+    "self": "🪞 твоя пара дня: ты сам(а)",
+    "later": "⏳ пара дня: задерживается в пути",
+    "overheat": "🔮 пара дня: шар перегрелся",
+    "everyone": "💞 пара дня: вся беседа сразу",
+}
+LOVE_TWIST_PLOTS = {
+    "alone": "сегодня пары нет: карты пророчат гордое одиночество, может даже навсегда. подай это смешно и драматично, как великую судьбу одиночки.",
+    "self": "сегодня главная любовь — это он сам: влюбится в свое отражение в зеркале салона красоты или в собственную аватарку.",
+    "later": "пара есть, но она застряла где-то в пути (в лифте, в лабиринте, на батискафе с марко) и придет не скоро.",
+    "overheat": "шар от такого запроса перегрелся и задымился, пару разглядеть невозможно; смешно опиши, что успела увидеть до этого.",
+    "everyone": "шар не смог выбрать одного и показал, что сегодня его любит вся беседа сразу, будто у него гарем поклонников.",
+}
+LOVE_OBJECTS = [
+    "статуя куста Иннокентия", "фонтан желаний", "качели у пальмы", "диско-шар в клубе", "холодильник в кулинарии",
+    "зеркало в салоне красоты", "батискаф Марко", "сундук из лабиринта", "мусорный пакет из квартиры Саши",
+    "подушка для боев", "барная стойка в клубе", "скамейка в сквере", "кассовый аппарат в магазине",
+    "волшебный шар Кунегунды", "клубный кубок", "дерево желаний", "пиратский сундук Джона Крюка",
+    "плюшевый питомец из зоомагазина", "лифт в доме", "ведро конфет с хэллоуина",
+]
+
 NPC_SHIP_CHANCE = 0.12    # в гадании: шуточный роман с игровым ботом
 NPC_PAIR_CHANCE = 0.15    # в паре дня: вместо участника беседы выпадает игровой бот
 
@@ -1131,6 +1156,34 @@ def handle_love(peer_id, from_id, cmid):
     placeholder_cmid = send_vk_message(peer_id, thinking, reply_to_cmid=cmid)
 
     CURRENT_HOT["themes"] = hot_themes()
+
+    # Иногда вместо пары: одиночество, неживой предмет и прочие безысходности
+    if random.random() < LOVE_TWIST_CHANCE:
+        twist = pick_fresh("love_twist", LOVE_TWISTS, keep=4)
+        tone = pick_tone()
+        if twist == "object":
+            obj = pick_fresh("love_object", without_hot(LOVE_OBJECTS, CURRENT_HOT["themes"]), keep=10)
+            header = f"💘 твоя пара дня: {obj} (неживой предмет)"
+            plot = f"сегодня {name or 'игрок'} безнадежно влюбится в неживой предмет из аватарии: {obj}. опиши этот роман смешно и трогательно."
+        else:
+            header = LOVE_TWIST_HEADERS[twist].replace("сам(а)", {"m": "сам", "f": "сама"}.get(sex, "ты же"))
+            plot = LOVE_TWIST_PLOTS[twist]
+        print(f"💘 [ПАРА ДНЯ] {name}: вместо пары '{twist}'")
+        sys_prompt = SYSTEM_PROMPT_BASE + f"""
+            тебя попросили найти пару дня для {name or 'игрока'} ({'парень' if sex == 'm' else 'девушка' if sex == 'f' else 'пол неизвестен, обходи род'}), но карты показали другое.
+            {plot}
+            это шутка с юмором, но по-доброму, без настоящей грусти и обидных слов. твое настроение: {tone}.
+            не больше 2 коротких предложений, не больше 35 слов. обращение на ты, имя не пиши.
+            {avoid_repeats_rule(from_id)}
+            """
+        reply = generate_ai_response(sys_prompt, "найди мне пару дня.", max_sentences=2, max_chars=300, names=(name, last_name))
+        reply = fix_gender_words(reply, sex)
+        remember_reply(from_id, reply)
+        text = f"{header}\n{who_tag}, {reply}"
+        if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, text)):
+            send_vk_message(peer_id, text, reply_to_cmid=cmid)
+        return
+
     npc = random.choice(without_hot(GAME_NPCS, CURRENT_HOT["themes"])) if random.random() < NPC_PAIR_CHANCE else None
     if npc:
         pid, pname, plast, psex = None, npc, None, None
