@@ -989,12 +989,36 @@ NEWCOMER_CHAT_SCENES = [
 
 # Чем Кунегунда начинает приветственное гадание
 NEWCOMER_RITUALS = [
-    "🔮 по старой традиции гадаю новичку на удачу...",
-    "🃏 вытягиваю для тебя первую карту...",
-    "✨ заглядываю в шар, что он покажет про тебя...",
-    "🕯 зажигаю свечу для нового гостя и смотрю...",
-    "☕ гадаю тебе на кофейной гуще с порога...",
+    ("🔮 по старой традиции гадаю новичку на удачу...", "в магическом шаре"),
+    ("🃏 вытягиваю для тебя первую карту...", "на картах таро (ты вытянула карту, назови какую)"),
+    ("✨ заглядываю в шар, что он покажет про тебя...", "в магическом шаре"),
+    ("🕯 зажигаю свечу для нового гостя и смотрю...", "по пламени и воску свечи"),
+    ("☕ гадаю тебе на кофейной гуще с порога...", "на кофейной гуще (ты видишь узор в чашке)"),
 ]
+
+def tidy_newcomer_text(text, user_name):
+    """Чистка приветствия: Кунегунда говорит о себе в женском роде, без старинных слов,
+    и не повторяет имя новичка в гадании (его уже отметили выше)."""
+    if not text:
+        return text
+    text = re.sub(r"(?<![а-яё])рад(?![а-яё])", "рада", text)
+    text = re.sub(r"(?<![а-яё])Рад(?![а-яё])", "Рада", text)
+    for old, new in (("сию", "эту"), ("сей", "этот"), ("сия", "эта"), ("сие", "это"), ("авось", ""), ("чую", ""), ("ныне", "теперь")):
+        text = re.sub(rf"(?<![а-яёА-ЯЁ])[,\s]*{old}(?![а-яё])", f" {new}" if new else "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+([,.!?…])", r"\1", text)
+    text = re.sub(r",\s*([.!?…])", r"\1", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
+
+def strip_leading_name(text, user_name):
+    """'Игорь, родной мой, загляни...' -> 'загляни...'"""
+    if not text or not user_name:
+        return text
+    m = re.match(rf"\s*{re.escape(user_name)}[а-яё]*(?:\s*,\s*|\s+)((?:[а-яё]+\s*){{0,3}},\s*)?", text, flags=re.IGNORECASE)
+    if m:
+        text = text[m.end():]
+        text = text[:1].lower() + text[1:]
+    return text
 
 # Короткая подсказка новичку отдельным абзацем
 NEWCOMER_HELP = """🃏 напиши «гадать», и я сделаю тебе предсказание (до 3 в день).
@@ -1292,15 +1316,21 @@ def process_event_async(data):
             {chat_info}
             никаких предсказаний, советов и пожеланий в этих предложениях.
             это первое знакомство: будь приветливой, никакого ворчания и подколов. обращение на ты. {who}
+            ты девушка, о себе говори в женском роде (рада, жила, вылезла).
+            пиши простыми понятными словами, без старинных словечек (сей, сию, авось, чую, ныне), без слова «уютный».
             """
             hello = generate_ai_response(hello_prompt, f"новичка зовут {user_name}, поприветствуй, упомяни беседу и расскажи, кто ты и откуда.",
                                          max_sentences=2, max_chars=200, names=(user_name, user_last), min_sentences=2)
             hello = fix_gender_words(hello, user_sex)
-            label = f"@{get_screen_name(invited_id)}" if invited_id > 0 else None
+            screen = get_screen_name(invited_id) if invited_id > 0 else ""
+            # у кого нет короткого адреса (id123...), того отмечаем по имени, а не "@id123"
+            label = f"@{screen}" if screen and not re.fullmatch(r"id\d+", screen) else None
+            hello = tidy_newcomer_text(hello, user_name)
             hello = tag_person(hello, invited_id, (user_name, user_last), label=label)
 
             # 2) приветственное гадание про жизнь в этой беседе клуба
             scene = pick_fresh("newcomer_scene", NEWCOMER_CHAT_SCENES, keep=12)
+            ritual, method = random.choice(NEWCOMER_RITUALS)
             print(f"🎬 [ГАДАНИЕ НОВИЧКУ] {scene}")
             fortune_prompt = SYSTEM_PROMPT_BASE + f"""
             сделай новичку приветственное гадание, как предсказание из шара: что хорошего, а может и смешного, случится с ним в этой беседе вконтакте.
@@ -1309,16 +1339,20 @@ def process_event_async(data):
             сюжет гадания: {scene}.
             предсказание позитивное и конкретное, с маленькой смешной деталью.
             даже простые вещи (найдешь друзей, тебе тут понравится) скажи необычно и смешно, по-своему, как гадалка кунегунда:
-            через шар, карты, свечи, кофейную гущу или знаки судьбы, а не готовыми словами вроде «уютная атмосфера».
+            ты гадаешь {method}. упоминай только этот способ гадания, другие (шар, карты, свечи, гущу) не называй.
+            не обыгрывай название беседы и не сравнивай новичка с животными. никаких готовых слов вроде «уютная атмосфера».
+            пиши простыми, понятными и грамотными предложениями, без старинных словечек (сей, авось, чую, ныне).
             твое настроение сейчас: {tone}. по-доброму, без ворчания и подколов.
-            одно-два коротких предложения, всего не больше 25 слов. обращение на ты, имя не пиши. {who}
+            одно-два коротких предложения, всего не больше 25 слов. обращение на ты.
+            имя новичка НЕ пиши и не начинай с обращения (родной, дорогой): его уже поприветствовали выше. {who}
             {avoid_repeats_rule(invited_id)}
             """
             fortune = generate_ai_response(fortune_prompt, "сделай новичку приветственное гадание про эту беседу.",
                                            max_sentences=2, max_chars=190, names=(user_name, user_last))
+            fortune = strip_leading_name(fortune, user_name)
+            fortune = tidy_newcomer_text(fortune, user_name)
             fortune = fix_gender_words(fortune, user_sex)
             remember_reply(invited_id, fortune)
-            ritual = random.choice(NEWCOMER_RITUALS)
             reply = f"{hello}\n\n{ritual}\n{fortune}"
             reply += "\n\n" + NEWCOMER_HELP
             send_vk_message(peer_id, reply)
