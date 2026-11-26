@@ -243,6 +243,10 @@ def pick_fact(user_id):
     blocked = set(seen) | set(recent_facts_global)
     choices = [i for i in range(n) if i not in blocked] or [i for i in range(n) if i not in seen] or list(range(n))
     choices = without_hot(choices, CURRENT_HOT["themes"], key=lambda i: AVATARIA_FACTS[i][0] + " " + AVATARIA_FACTS[i][1])
+    motifs = recent_motifs()
+    by_motif = [i for i in choices if not motif_blocked(AVATARIA_FACTS[i][0] + " " + AVATARIA_FACTS[i][1], motifs)]
+    if by_motif:
+        choices = by_motif  # не про то же самое, что недавно (опять награды, опять мини-игры...)
     recent_sections = {AVATARIA_FACTS[j][0] for j in recent_facts_global[-3:]}
     other_sections = [i for i in choices if AVATARIA_FACTS[i][0] not in recent_sections]
     if other_sections:
@@ -366,6 +370,31 @@ THEMES = {
 THEME_COOLDOWN = 10   # сколько последних ответов (по всем беседам) проверяем
 THEME_BASE_BLOCK = 0.75  # даже если темы давно не было, чаще всего все равно ее не даем
 
+# Виды предсказаний (о чем вообще гадание). Темы выше — это конкретные места и боты,
+# а тут общий смысл: если недавно было «выбьешь авапак», то следующее гадание не про награды вообще,
+# даже если место другое (каньон, курорт, серфы — все равно «опять награда»).
+MOTIFS = {
+    "награды и выпадения: авапаки, костюмы, призы, подарки, золото": r"авапак|альпак|костюм|выбь|выпад|приз|награ|подар|золот|монет|сундук|колес[оа] фортун",
+    "мини-игры и соревнования: гонки, серфы, каньон, сноуборд, хоккей, бои на подушках": r"гонк|серф|каньон|курорт|горнолыж|лыж|сноуборд|спуск|хокке|подушк|соревнов|турнир|лабиринт|бродилк",
+    "дом и мебель": r"мебел|квартир|интерьер|редактор комнат|диван|ремонт",
+    "питомцы": r"питом|зоомаг|котен|щен",
+    "клубы и челленджи": r"клуб|челлендж|лиг[аеиу]|бомбардир",
+    "мода, образы и красота": r"образ|наряд|стил[ья]|кутюр|салон|визаж|прическ|мод[аын]",
+    "любовь и свидания": r"любов|влюб|свидан|роман|поцел|сердц|обручи|свадьб",
+    "фото": r"фото",
+    "уровни, опыт и рейтинг": r"уров|опыт|рейтинг|топ[ае ]",
+    "сбои игры и вылеты": r"вылет|завис|лаг|загрузк|баг",
+}
+MOTIF_WINDOW = 5  # сколько последних гаданий (по всем беседам) помним
+
+def recent_motifs():
+    recent = list(RECENT_REPLIES)[-MOTIF_WINDOW:]
+    return [m for m, rx in MOTIFS.items() if any(re.search(rx, r.lower()) for r in recent)]
+
+def motif_blocked(text, motifs):
+    t = (text or "").lower()
+    return any(re.search(MOTIFS[m], t) for m in motifs)
+
 def recent_themes():
     recent = " ".join(list(RECENT_REPLIES)[-THEME_COOLDOWN:]).lower()
     return [t for t, rx in THEMES.items() if re.search(rx, recent)]
@@ -408,6 +437,10 @@ def themes_rule(themes):
     rule = ""
     if themes:
         rule += "\n            не упоминай в этот раз: " + "; ".join(themes) + "."
+    motifs = recent_motifs()
+    if motifs:
+        rule += ("\n            недавние гадания уже были про: " + "; ".join(motifs) +
+                 ". в этот раз предскажи событие совсем другого рода, даже в другом месте игры не повторяй тот же смысл.")
     words = overused_words()
     if words:
         rule += "\n            эти слова ты в последнее время говорила слишком часто, не используй их и их однокоренные: " + ", ".join(words) + "."
