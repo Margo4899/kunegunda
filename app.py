@@ -953,19 +953,52 @@ INTERJECTIONS = {"ох", "ах", "эх", "ну", "ой", "ух", "хм", "так
     "слушай", "милый", "милая", "милые", "родной", "родная", "дорогой", "дорогая", "солнце", "звезда", "ага", "фу",
     "эй", "о", "а", "да", "нет", "хорошо", "смотри", "знаешь", "погоди", "тише", "мда", "ха", "хаха", "ого", "уф"}
 
-def _name_match(word, names):
-    """Похоже ли слово на имя (или его форму: Данил -> Данечка). Для коротких имен нужно точное совпадение."""
+_LAT2CYR = [("sch", "щ"), ("sh", "ш"), ("ch", "ч"), ("zh", "ж"), ("kh", "х"), ("ts", "ц"), ("ya", "я"),
+            ("yu", "ю"), ("yo", "ё"), ("ia", "я"), ("a", "а"), ("b", "б"), ("c", "к"), ("d", "д"), ("e", "е"),
+            ("f", "ф"), ("g", "г"), ("h", "х"), ("i", "и"), ("j", "дж"), ("k", "к"), ("l", "л"), ("m", "м"),
+            ("n", "н"), ("o", "о"), ("p", "п"), ("q", "к"), ("r", "р"), ("s", "с"), ("t", "т"), ("u", "у"),
+            ("v", "в"), ("w", "в"), ("x", "кс"), ("y", "и"), ("z", "з")]
+
+def _to_cyr(word):
+    """Kira -> кира, Polya -> поля (грубо, только для сравнения имен)."""
     w = word.lower()
+    if not re.search(r"[a-z]", w):
+        return w
+    out, i = "", 0
+    while i < len(w):
+        for lat, cyr in _LAT2CYR:
+            if w.startswith(lat, i):
+                out += cyr
+                i += len(lat)
+                break
+        else:
+            out += w[i]
+            i += 1
+    return out
+
+def _name_match(word, names):
+    """Похоже ли слово на имя (или его форму: Данил -> Данечка, Kira -> Кира). Для коротких имен нужно точное совпадение."""
+    w = _to_cyr(word)
     for n in names:
         if not n:
             continue
-        n = n.strip().lower()
+        n = _to_cyr(n.strip())
         if len(n) < 3:
             if w == n:
                 return True
         elif w[:3] == n[:3]:
             return True
     return False
+
+def _drop_repeat_names(text, names, after):
+    """Имя уже отмечено: убираем повторные обращения по имени дальше по тексту («..., Кира.»)."""
+    head, tail = text[:after], text[after:]
+    def drop(m):
+        return m.group(0) if not _name_match(m.group("n"), names) else (m.group("end") or "")
+    tail = re.sub(r",\s*(?P<n>[А-ЯЁA-Z][а-яёa-z]+)(?P<end>[.!?…])", drop, tail)
+    tail = re.sub(r"(?P<pre>(?:^|[.!?…]\s+))(?P<n>[А-ЯЁA-Z][а-яёa-z]+),\s*(?P<end>)",
+                  lambda m: m.group(0) if not _name_match(m.group("n"), names) else m.group("pre"), tail)
+    return head + tail
 
 def tag_person(reply, user_id, names, label=None, prepend=True):
     """Делает первое обращение к человеку в ответе отметкой (синей ссылкой).
@@ -977,7 +1010,8 @@ def tag_person(reply, user_id, names, label=None, prepend=True):
     for m in re.finditer(r"[А-ЯЁA-Zа-яёa-z][А-ЯЁA-Zа-яёa-z0-9_]*", reply):
         if _name_match(m.group(0), names):
             shown = m.group(0) if m.group(0)[0].isupper() else (first or m.group(0))
-            return reply[:m.start()] + mention(user_id, label or shown) + reply[m.end():]
+            tagged = reply[:m.start()] + mention(user_id, label or shown)
+            return _drop_repeat_names(tagged + reply[m.end():], names, len(tagged))
     # ответ начинается с обращения "микола," — модель переделала ник, заменяем это слово на отметку
     m = re.match(r"^([^\s,.!?\[\]|]{1,25}),", reply)
     if m and first and m.group(1).lower() not in INTERJECTIONS:
