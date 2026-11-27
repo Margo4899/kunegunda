@@ -2103,6 +2103,21 @@ def start_background():
 
 start_background()
 
+# --- ХАМУЛЬКА живет в этом же сервисе (адрес /hamulka), чтобы хватало бесплатных часов Render ---
+try:
+    from hamulka import bot as hamulka_bot
+    print("🌶️ [ХАМУЛЬКА] Загружена в общий сервис")
+except Exception as e:
+    hamulka_bot = None
+    print(f"❌ [ХАМУЛЬКА] Не загрузилась: {e}")
+    traceback.print_exc()
+
+@app.route('/hamulka', methods=['GET', 'POST'])
+def hamulka_callback():
+    if not hamulka_bot:
+        return 'hamulka not loaded', 500
+    return hamulka_bot.bot()
+
 # --- 7. FLASK (страница проверки и запасной Callback API) ---
 @app.route('/', methods=['GET', 'POST'])
 def vk_callback():

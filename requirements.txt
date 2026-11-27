@@ -4,3 +4,5 @@ requests
 supabase
 gunicorn
 Pillow
+vk_api
+psycopg2-binary
