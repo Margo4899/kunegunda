@@ -1708,6 +1708,15 @@ GIFT_RULES_TEXT = ("📜 как это работает:\n"
                    "• дар действует 3 дня, потом шар выберет нового счастливчика\n"
                    "• «дары» — у кого дар сейчас, «мои дары» — твоя коллекция")
 
+# Как пользоваться даром: ничего нового учить не надо, все работает через обычные команды
+_FORTUNE_HOW = "пиши «гадать», как обычно, и это добавится к твоим гаданиям"
+_LOVE_HOW = "пиши «суженый» или «суженая», как обычно"
+GIFT_HOW_TO = {c: _FORTUNE_HOW for c in ("double", "royal", "royal_decree", "royal_dark", "bright", "cursed", "love_theme",
+                                         "prophecy", "emoji", "lore", "talisman", "lucky_number", "admirer", "gossip",
+                                         "rhyme", "wish", "npc_mask")}
+GIFT_HOW_TO.update({c: "пиши «гадать», как обычно, лимит уже увеличен" for c in ("extra1", "extra2", "extra3")})
+GIFT_HOW_TO.update({c: _LOVE_HOW for c in ("love_extra", "love_3", "love_real", "love_cursed")})
+
 def codes_of(user_id):
     return {ARTIFACTS[a]["code"] for a in active_artifacts(user_id) if a in ARTIFACTS}
 
@@ -1873,23 +1882,22 @@ def give_gift(peer_id, forced_user=None):
     artifact = random.choice([k for k in ARTIFACTS if k != prev_art])
     a = ARTIFACTS[artifact]
     name, profile_sex, last_name = get_vk_user_full(winner)
-    sex = resolve_sex(name, profile_sex)
     tone = pick_tone(friendly_only=True)
     story = generate_ai_response(SYSTEM_PROMPT_BASE + f"""
-        ты раз в три дня даришь одному участнику беседы волшебный артефакт. сегодня шар выбрал {name or 'игрока'}.
-        артефакт: {a['name']} — это {a['story']}. что он дает: {a['effect']}.
-        торжественно и смешно объяви, почему шар выбрал именно этого человека (придумай забавную причину),
-        и вручи артефакт. настроение: {tone}. 2-3 коротких предложения, обращение на ты, имя не пиши. {person_rule(name, sex, last_name, allow_play=False)}
-        """, "вручи дар.", max_sentences=3, max_chars=330, names=(name, last_name))
-    story = fix_gender_words(story, sex)
+        ты раз в три дня даришь одному участнику беседы волшебный артефакт. сегодня шар выбрал этого человека.
+        артефакт: {a['name']} — это {a['story']}.
+        торжественно и смешно объясни, почему шар выбрал именно этого человека (придумай забавную причину), и вручи артефакт.
+        что дает артефакт, не пересказывай, это напишут отдельно. настроение: {tone}.
+        2 коротких предложения, обращение на ты, имя не пиши.
+        пиши без рода: не используй слова, по которым видно, парень это или девушка (никаких «получил/получила», «рад/рада», «милый/милая»).
+        """, "вручи дар.", max_sentences=2, max_chars=260, names=(name, last_name))
     save_gift(peer_id, winner, artifact)
-    who = mention(winner, name or "счастливчик")
-    lucky = {"m": "счастливчик", "f": "счастливица"}.get(sex, "счастливчик")
+    who = mention(winner, "@" + get_screen_name(winner))
     text = (f"🎁✨ ДАР КУНЕГУНДЫ ✨🎁\n\n"
-            f"шар выбрал: {who}, {lucky} трех ближайших дней!\n\n"
+            f"{who}, шар выбрал тебя! тебе достается {a['name']} на 3 дня.\n\n"
             f"{story}\n\n"
-            f"🔮 {a['name']}\n"
-            f"✨ привилегия на 3 дня: {a['effect']}\n\n"
+            f"✨ что дает: {a['effect']}\n"
+            f"👉 {GIFT_HOW_TO[a['code']]}\n\n"
             f"{GIFT_RULES_TEXT}")
     print(f"🎁 [ДАРЫ] Беседа {peer_id}: {winner} получает {artifact}")
     send_with_photo(peer_id, text, upload_card(peer_id, artifact))
@@ -1940,8 +1948,8 @@ def handle_gifts_command(peer_id, from_id, text, cmid):
         when = f"{hours // 24} дн. {hours % 24} ч." if hours >= 24 else f"{hours} ч."
         name = get_vk_user_full(g["user_id"])[0]
         send_vk_message(peer_id,
-            f"🎁 сейчас дар у {mention(g['user_id'], name or 'кого-то')}: {a.get('name')}\n"
-            f"✨ {a.get('effect')}\n⏳ действует еще {when}\n\n{GIFT_RULES_TEXT}", reply_to_cmid=cmid)
+            f"🎁 сейчас дар у {mention(g['user_id'], '@' + get_screen_name(g['user_id']))}: {a.get('name')}\n"
+            f"✨ {a.get('effect')}\n👉 {GIFT_HOW_TO.get(a.get('code'), '')}\n⏳ действует еще {when}\n\n{GIFT_RULES_TEXT}", reply_to_cmid=cmid)
         return True
     if t.startswith("!вручить дар") and from_id in ADMIN_IDS:
         target = re.search(r"\[id(\d+)\|", text)
