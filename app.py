@@ -145,9 +145,6 @@ def user_daily_limit(user_id):
         return DAILY_LIMIT
 
 def _check_limit(user_id):
-    if is_admin(user_id):
-        print(f"👑 [АДМИН] Лимит гаданий для {user_id} не действует")
-        return True
     if str(user_id) in LIMIT_EXEMPT_IDS:
         print(f"🧪 [ТЕСТ] Лимит для user_id={user_id} отключен (LIMIT_EXEMPT_IDS).")
         return True
@@ -1272,8 +1269,8 @@ def mirror_second_try(user_id, today):
 
 def check_and_mark_love(user_id):
     """True, если сегодня пару еще не искали (и сразу отмечаем). Хранится в Supabase, таблица love_limits."""
-    if str(user_id) in LIMIT_EXEMPT_IDS or is_admin(user_id):
-        print(f"🧪 [ТЕСТ] Лимит пары дня для user_id={user_id} отключен (админ или LIMIT_EXEMPT_IDS).")
+    if str(user_id) in LIMIT_EXEMPT_IDS:
+        print(f"🧪 [ТЕСТ] Лимит пары дня для user_id={user_id} отключен (LIMIT_EXEMPT_IDS).")
         return True
     today = msk_now().strftime("%Y-%m-%d")
     if supabase:
