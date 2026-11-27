@@ -23,7 +23,10 @@ sys.stderr.reconfigure(line_buffering=True)
 
 # --- 1. ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 VK_TOKEN = os.environ.get('HAM_VK_TOKEN', '')
-CONFIRMATION_CODE = os.environ.get('HAM_CONFIRMATION_CODE', '')
+# Строка подтверждения из настроек Callback API группы Хамульки (не секрет, ВК показывает ее в настройках)
+CONFIRMATION_CODE = 'dd941ff5'
+if os.environ.get('HAM_CONFIRMATION_CODE', '').strip() not in ('', CONFIRMATION_CODE):
+    print("⚠️ [ХАМУЛЬКА] HAM_CONFIRMATION_CODE в Render отличается от кода в ВК, использую код из ВК")
 AI_API_KEY = os.environ.get('HAM_GROQ_KEY', '')          # Groq (запасная модель)
 GEMINI_API_KEY = os.environ.get('HAM_GEMINI_KEY', '')  # Google Gemini (основная модель)
 GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash']
@@ -1216,7 +1219,7 @@ def bot():
     event_type = data.get('type')
 
     if event_type == 'confirmation':
-        print("✅ [ВК Webhook] Подтверждение адреса (confirmation)")
+        print(f"✅ [ВК Webhook] Подтверждение адреса (confirmation), группа {data.get('group_id')}, отдаю {CONFIRMATION_CODE[:2]}...")
         return CONFIRMATION_CODE
     
     if event_type == 'message_new':
