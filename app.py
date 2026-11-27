@@ -140,7 +140,7 @@ def check_and_update_limit_supabase(user_id):
 def user_daily_limit(user_id):
     """3 гадания в день, а с клевером или подковой больше."""
     try:
-        return DAILY_LIMIT + max([GIFT_EXTRA_FORTUNES.get(a, 0) for a in active_artifacts(user_id)] or [0])
+        return DAILY_LIMIT + max([GIFT_EXTRA_BY_CODE.get(c, 0) for c in codes_of(user_id)] or [0])
     except Exception:
         return DAILY_LIMIT
 
@@ -1255,7 +1255,7 @@ LOVE_USED_REPLIES = [
 
 def mirror_second_try(user_id, today):
     """Зеркало двух судеб: вторая пара за день."""
-    if "mirror" in active_artifacts(user_id) and _love_extra_used.get(user_id) != today:
+    if "love_extra" in codes_of(user_id) and _love_extra_used.get(user_id) != today:
         _love_extra_used[user_id] = today
         print(f"🪞 [ДАРЫ] Вторая пара дня по зеркалу для {user_id}")
         return True
@@ -1573,10 +1573,10 @@ def process_event_async(data):
                 npc = pick_fresh("npc", without_hot(GAME_NPCS, CURRENT_HOT["themes"]), keep=8)
                 mood = f"шуточный роман (шип) с игровым ботом: {npc_desc(npc)}. по-доброму и смешно, связав это с фактом"
             tone = pick_tone()
-            arts = active_artifacts(from_id)
-            lore = pick_fresh("lore", without_hot(KUNEGUNDA_LORE, CURRENT_HOT["themes"]), keep=20) if KUNEGUNDA_LORE and (random.random() < LORE_CHANCE or "cup" in arts) else None
+            codes = codes_of(from_id)
+            lore = pick_fresh("lore", without_hot(KUNEGUNDA_LORE, CURRENT_HOT["themes"]), keep=20) if KUNEGUNDA_LORE and (random.random() < LORE_CHANCE or "lore" in codes) else None
             gossip = ""
-            if "feather" in arts:
+            if "gossip" in codes:
                 others = [m for m in get_chat_members(peer_id) if m[0] != from_id] if peer_id > 2000000000 else []
                 if others:
                     o = random.choice(others)
@@ -1589,6 +1589,8 @@ def process_event_async(data):
 
             lore_rule = ""
             max_sent, max_len, max_words = 2, 220, 25
+            if codes & {"prophecy", "gossip", "rhyme"}:
+                max_sent, max_len, max_words = 3, 320, 40
 
             sys_prompt = SYSTEM_PROMPT_BASE + f"""
             предсказание делается про игру аватария, строго про одну тему:
@@ -1646,25 +1648,45 @@ GIFT_EVERY_DAYS = 3
 GIFT_HOURS_MSK = (18, 22)       # вручаем вечером по МСК
 GIFT_ACTIVE_DAYS = 3            # выбираем среди тех, кто писал в беседе за эти дни
 
-ARTIFACTS = {
-    "clover":    {"name": "Четырехлистный клевер", "effect": "+1 гадание в день (4 вместо 3)",
-                  "story": "клевер, который я сорвала у входа в свою пещеру в самую грозовую ночь"},
-    "horseshoe": {"name": "Золотая подкова", "effect": "+2 гадания в день (5 вместо 3)",
-                  "story": "подкова, которую потерял конь самого везучего пирата тропикании"},
-    "crown":     {"name": "Корона беседы", "effect": "титул царя или царицы беседы, гадания с королевскими почестями",
-                  "story": "корона, которую я нашла в сундуке, пока гонялась за сбежавшей ящерицей"},
-    "mirror":    {"name": "Зеркало двух судеб", "effect": "пару дня можно искать 2 раза в день",
-                  "story": "зеркало, в котором отражается не лицо, а тот, кто о тебе думает"},
-    "ball":      {"name": "Хрустальный шарик-малыш", "effect": "все гадания светлые и с хорошим концом",
-                  "story": "детеныш моего большого шара, он видит только хорошее"},
-    "cup":       {"name": "Чашка Кунегунды", "effect": "в каждом гадании я выдаю тебе секрет о себе",
-                  "story": "моя любимая чашка со сколом, из нее я гадала еще бабушке"},
-    "button":    {"name": "Проклятая пуговица", "effect": "шуточное проклятие: гадания мрачные и драматичные, но с хэппи-эндом",
-                  "story": "пуговица с плаща одного злющего колдуна, никто не хочет ее брать, поэтому достается самым смелым"},
-    "feather":   {"name": "Перо болтливого попугая", "effect": "в каждом гадании я выдаю сплетню про кого-то из беседы",
-                  "story": "перо попугая, который подслушивал у всех окон тропикании"},
+# key: (название, эффект, текст на карточке, что дает, история)
+_DECK = {
+ "hourglass_desert": ("Пустынные часы", "extra1", "+1 гадание в день", "+1 гадание в день (4 вместо 3)", "часы, в которых песок течет вверх, потому что время с ними на твоей стороне"),
+ "crown_shadow":     ("Корона теней", "royal_dark", "Темный владыка беседы", "титул темного владыки или владычицы беседы: я гадаю тебе с мрачными почестями", "корона, которую теневые жители тропикании прятали под старой пальмой"),
+ "moon_amulet":      ("Лунный амулет", "love_theme", "Гадания о любви", "все твои гадания про любовь, симпатии и романтику", "амулет, который светится, когда о тебе кто-то думает перед сном"),
+ "prophet_ball":     ("Пророческий шар", "prophecy", "Бонус-пророчество на завтра", "к каждому гаданию бонусное пророчество на завтра", "шар, который я сама боюсь лишний раз протирать, слишком много видит"),
+ "curse_scroll":     ("Свиток проклятия", "cursed", "Мрачные гадания с хэппи-эндом", "шуточное проклятие: гадания мрачные и драматичные, но с хэппи-эндом", "свиток, который никто не может дочитать до конца, потому что начинает чихать"),
+ "forget_potion":    ("Зелье забвения", "extra1", "+1 гадание в день", "я забываю про одно твое гадание: +1 гадание в день", "зелье, после которого я забыла, куда положила свою любимую метлу"),
+ "illusion_mask":    ("Маска иллюзий", "npc_mask", "Гадаю, будто ты бот Аватарии", "я принимаю тебя за игрового бота аватарии и гадаю тебе как ему", "маска, в которой даже охранник у VIP-входа примет тебя за своего"),
+ "soul_lantern":     ("Фонарь душ", "gossip", "Тайна про кого-то из беседы", "в каждом гадании я раскрываю добрую тайну про кого-то из беседы", "фонарь, который светит прямо в чужие секреты"),
+ "sand_hourglass":   ("Песочные часы", "extra1", "+1 гадание в день", "+1 гадание в день (4 вместо 3)", "часы, которые я выиграла в споре у песчаной бури"),
+ "star_amulet":      ("Звездный амулет", "bright", "Только светлые гадания", "все гадания светлые и с хорошим концом", "амулет из звезды, которая упала прямо в мою чашку чая"),
+ "luck_potion":      ("Зелье удачи", "extra2", "+2 гадания в день", "+2 гадания в день (5 вместо 3)", "зелье, от которого удача прилипает, как жвачка к подошве"),
+ "wish_book":        ("Книга желаний", "wish", "Гадания о мечтах", "в каждом гадании я предсказываю, как сбудется одна твоя мечта в аватарии", "книга, в которой все мои желания уже записаны чьим-то почерком"),
+ "crystal":          ("Волшебный кристалл", "lore", "Секреты Кунегунды", "в каждом гадании я выдаю тебе свой секрет", "кристалл из самой глубокой пещеры, где я жила"),
+ "happy_key":        ("Ключ к счастью", "love_extra", "2 пары дня в день", "пару дня можно искать 2 раза в день", "ключ, который открывает любые двери, кроме моей кладовки"),
+ "inspire_feather":  ("Перо вдохновения", "rhyme", "Гадания в стихах", "все твои гадания я рассказываю в рифму", "перо, которым один поэт написал оду моему борщу"),
+ "dream_crown":      ("Корона мечты", "royal", "Царь или царица беседы", "титул царя или царицы беседы: я гадаю тебе с королевскими почестями", "корона, которую мне подарил сон, а я забыла ее вернуть"),
+ "clover":           ("Четырехлистный клевер", "extra1", "+1 гадание в день", "+1 гадание в день (4 вместо 3)", "клевер, который я сорвала у входа в пещеру в самую грозовую ночь"),
+ "crown":            ("Корона беседы", "royal", "Царь или царица беседы", "титул царя или царицы беседы: я гадаю тебе с королевскими почестями", "корона, которую я нашла в сундуке, пока гонялась за сбежавшей ящерицей"),
+ "mirror":           ("Зеркало двух судеб", "love_extra", "2 пары дня в день", "пару дня можно искать 2 раза в день", "зеркало, в котором отражается не лицо, а тот, кто о тебе думает"),
+ "ball":             ("Хрустальный шарик", "bright", "Только светлые гадания", "все гадания светлые и с хорошим концом", "детеныш моего большого шара, он видит только хорошее"),
+ "cup":              ("Чашка Кунегунды", "lore", "Секреты Кунегунды", "в каждом гадании я выдаю тебе свой секрет", "моя любимая чашка со сколом, из нее я гадала еще бабушке"),
+ "button":           ("Проклятая пуговица", "cursed", "Мрачные гадания с хэппи-эндом", "шуточное проклятие: гадания мрачные и драматичные, но с хэппи-эндом", "пуговица с плаща злющего колдуна, достается только самым смелым"),
+ "horseshoe":        ("Золотая подкова", "extra2", "+2 гадания в день", "+2 гадания в день (5 вместо 3)", "подкова, которую потерял конь самого везучего пирата тропикании"),
+ "feather":          ("Перо болтливого попугая", "gossip", "Сплетня про кого-то из беседы", "в каждом гадании я выдаю добрую сплетню про кого-то из беседы", "перо попугая, который подслушивал у всех окон тропикании"),
 }
-GIFT_EXTRA_FORTUNES = {"clover": 1, "horseshoe": 2}
+ARTIFACTS = {k: {"name": v[0], "code": v[1], "effect": v[3], "story": v[4]} for k, v in _DECK.items()}
+GIFT_EXTRA_BY_CODE = {"extra1": 1, "extra2": 2}
+GIFT_MIN_MESSAGES = 2           # сколько сообщений за 3 дня нужно, чтобы попасть в розыгрыш
+ADMIN_IDS = {691070777} | {int(x) for x in LIMIT_EXEMPT_IDS if x.isdigit()}
+
+GIFT_RULES_TEXT = ("📜 как это работает:\n"
+                   "• раз в 3 дня вечером я дарю артефакт одному из тех, кто писал в беседе за последние 3 дня (хотя бы 2 сообщения)\n"
+                   "• дар действует 3 дня, потом я выбираю нового счастливчика\n"
+                   "• «дары» — у кого дар сейчас, «мои дары» — твоя коллекция")
+
+def codes_of(user_id):
+    return {ARTIFACTS[a]["code"] for a in active_artifacts(user_id) if a in ARTIFACTS}
 
 _gifts_mem = []        # если таблицы в Supabase нет: [{peer_id, user_id, artifact, given_at, expires_at}]
 _activity_mem = {}     # (peer_id, user_id) -> timestamp
@@ -1680,43 +1702,54 @@ def _parse_dt(v):
     except Exception:
         return None
 
+_msg_counts = {}       # (peer_id, user_id, день) -> сколько сообщений
+
+def _day(ts=None):
+    return datetime.fromtimestamp(ts or time.time(), MSK).strftime("%Y-%m-%d")
+
 def note_activity(peer_id, user_id):
-    """Запоминаем, кто пишет в беседе (для выбора счастливчика)."""
+    """Считаем сообщения в беседе (для выбора счастливчика)."""
     if not peer_id or peer_id < 2000000000 or not user_id or user_id < 0:
         return
     now = time.time()
+    key = (peer_id, user_id, _day(now))
+    _msg_counts[key] = _msg_counts.get(key, 0) + 1
     _activity_mem[(peer_id, user_id)] = now
-    if supabase and now - _activity_saved.get((peer_id, user_id), 0) > 3600:
-        _activity_saved[(peer_id, user_id)] = now
+    n = _msg_counts[key]
+    if supabase and (n <= GIFT_MIN_MESSAGES or now - _activity_saved.get(key, 0) > 900):
+        _activity_saved[key] = now
         try:
             supabase.table("kunegunda_activity").upsert(
-                {"peer_id": peer_id, "user_id": user_id, "last_seen": _iso(datetime.now(timezone.utc))}).execute()
+                {"peer_id": peer_id, "user_id": user_id, "day": key[2], "msgs": n}).execute()
         except Exception as e:
             print(f"⚠️ [ДАРЫ] Таблица kunegunda_activity недоступна: {e}")
 
+def _load_activity():
+    """После перезапуска подтягиваем счетчики за последние дни из базы."""
+    if not supabase:
+        return
+    try:
+        since = _day(time.time() - (GIFT_ACTIVE_DAYS + 1) * 86400)
+        res = supabase.table("kunegunda_activity").select("*").gte("day", since).execute()
+        for r in res.data or []:
+            key = (int(r["peer_id"]), int(r["user_id"]), str(r["day"]))
+            _msg_counts[key] = max(_msg_counts.get(key, 0), int(r.get("msgs") or 0))
+            _activity_mem[(key[0], key[1])] = time.time()
+        print(f"🎁 [ДАРЫ] Загружено записей активности: {len(res.data or [])}")
+    except Exception as e:
+        print(f"⚠️ [ДАРЫ] Не загрузила активность: {e}")
+
 def active_users(peer_id, days=GIFT_ACTIVE_DAYS):
-    since = time.time() - days * 86400
-    users = {u for (p, u), t in _activity_mem.items() if p == peer_id and t >= since}
-    if supabase:
-        try:
-            res = supabase.table("kunegunda_activity").select("user_id,last_seen").eq("peer_id", peer_id).execute()
-            for r in res.data or []:
-                dt = _parse_dt(r.get("last_seen"))
-                if dt and dt.timestamp() >= since:
-                    users.add(int(r["user_id"]))
-        except Exception:
-            pass
-    return list(users)
+    """Кто написал в беседе хотя бы GIFT_MIN_MESSAGES сообщений за последние days дней."""
+    days_set = {_day(time.time() - i * 86400) for i in range(days)}
+    totals = {}
+    for (p, u, d), n in _msg_counts.items():
+        if p == peer_id and d in days_set:
+            totals[u] = totals.get(u, 0) + n
+    return [u for u, n in totals.items() if n >= GIFT_MIN_MESSAGES]
 
 def known_peers():
-    peers = {p for (p, _u) in _activity_mem}
-    if supabase:
-        try:
-            res = supabase.table("kunegunda_activity").select("peer_id").execute()
-            peers |= {int(r["peer_id"]) for r in res.data or []}
-        except Exception:
-            pass
-    return peers
+    return {p for (p, _u, _d) in _msg_counts}
 
 def gifts_of(peer_id=None, user_id=None):
     rows = []
@@ -1794,9 +1827,7 @@ def give_gift(peer_id, forced_user=None):
     if forced_user:
         winner = forced_user
     else:
-        candidates = [u for u in active_users(peer_id) if u != prev_user]
-        if len(candidates) < 1:
-            candidates = [m[0] for m in get_chat_members(peer_id) if m[0] != prev_user]
+        candidates = [u for u in active_users(peer_id) if u != prev_user] or active_users(peer_id)
         if not candidates:
             print(f"🎁 [ДАРЫ] В беседе {peer_id} некому дарить")
             return
@@ -1820,8 +1851,8 @@ def give_gift(peer_id, forced_user=None):
             f"шар выбрал: {who}, {lucky} трех ближайших дней!\n\n"
             f"{story}\n\n"
             f"🔮 {a['name']}\n"
-            f"✨ действует 3 дня: {a['effect']}\n\n"
-            f"следующий дар через 3 дня. напиши «дары», чтобы узнать, у кого он сейчас.")
+            f"✨ привилегия на 3 дня: {a['effect']}\n\n"
+            f"{GIFT_RULES_TEXT}")
     print(f"🎁 [ДАРЫ] Беседа {peer_id}: {winner} получает {artifact}")
     send_with_photo(peer_id, text, upload_card(peer_id, artifact))
 
@@ -1863,7 +1894,7 @@ def handle_gifts_command(peer_id, from_id, text, cmid):
     if t in GIFTS_WORDS:
         g = current_gift(peer_id)
         if not g:
-            send_vk_message(peer_id, "🎁 сейчас дар ни у кого. раз в 3 дня вечером я вытягиваю артефакт и дарю его тому, кто был в беседе. пиши почаще, чтобы шар тебя заметил!", reply_to_cmid=cmid)
+            send_vk_message(peer_id, "🎁 сейчас дар ни у кого.\n\n" + GIFT_RULES_TEXT, reply_to_cmid=cmid)
             return True
         a = ARTIFACTS.get(g["artifact"], {})
         left = _parse_dt(g["expires_at"]) - datetime.now(timezone.utc)
@@ -1872,24 +1903,29 @@ def handle_gifts_command(peer_id, from_id, text, cmid):
         name = get_vk_user_full(g["user_id"])[0]
         send_vk_message(peer_id,
             f"🎁 сейчас дар у {mention(g['user_id'], name or 'кого-то')}: {a.get('name')}\n"
-            f"✨ {a.get('effect')}\n⏳ действует еще {when}, потом я выберу нового счастливчика.", reply_to_cmid=cmid)
+            f"✨ {a.get('effect')}\n⏳ действует еще {when}\n\n{GIFT_RULES_TEXT}", reply_to_cmid=cmid)
         return True
-    if t.startswith("!вручить дар") and str(from_id) in LIMIT_EXEMPT_IDS:
+    if t.startswith("!вручить дар") and from_id in ADMIN_IDS:
         target = re.search(r"\[id(\d+)\|", text)
         give_gift(peer_id, int(target.group(1)) if target else None)
         return True
     return False
 
+GIFT_PROMPT_RULES = {
+    "royal": "у этого игрока корона: обращайся к нему с королевскими почестями (ваше величество, государь или государыня), торжественно и смешно.",
+    "royal_dark": "у игрока корона теней: обращайся к нему как к темному владыке или владычице беседы, мрачно-торжественно и смешно.",
+    "bright": "у игрока светлый амулет: предсказание обязательно светлое и с хорошим концом.",
+    "cursed": "на игроке шуточное проклятие: предскажи мрачно и драматично, но закончи хэппи-эндом.",
+    "love_theme": "у игрока лунный амулет: гадание обязательно про любовь, симпатию или романтику в аватарии.",
+    "prophecy": "у игрока пророческий шар: в конце добавь короткое бонусное пророчество на завтра, начни его словами «а завтра».",
+    "npc_mask": "у игрока маска иллюзий: ты по ошибке принимаешь его за игрового бота аватарии (диджея, повара, официантку и т.п.) и гадаешь ему как этому боту, смешно.",
+    "rhyme": "у игрока перо вдохновения: напиши предсказание в рифму, двумя короткими рифмованными строчками.",
+    "wish": "у игрока книга желаний: предскажи, как сбудется одна его мечта в аватарии (придумай, о чем он мечтает).",
+}
+
 def gift_prompt_rule(user_id):
     """Добавка в промпт гадания, если у человека есть дар."""
-    arts = active_artifacts(user_id)
-    rules = []
-    if "crown" in arts:
-        rules.append("у этого игрока корона беседы: обращайся к нему с королевскими почестями (ваше величество, государыня или государь), торжественно и смешно.")
-    if "ball" in arts:
-        rules.append("у игрока хрустальный шарик-малыш: предсказание обязательно светлое и с хорошим концом.")
-    if "button" in arts:
-        rules.append("на игроке шуточное проклятие пуговицы: предскажи мрачно и драматично, но закончи хэппи-эндом.")
+    rules = [GIFT_PROMPT_RULES[c] for c in codes_of(user_id) if c in GIFT_PROMPT_RULES]
     return ("\n            " + " ".join(rules)) if rules else ""
 
 def vk_api_call(method, **params):
@@ -1957,6 +1993,7 @@ def start_background():
     _started = True
     threading.Thread(target=long_poll_loop, daemon=True).start()
     threading.Thread(target=keep_awake_loop, daemon=True).start()
+    threading.Thread(target=_load_activity, daemon=True).start()
     threading.Thread(target=gift_loop, daemon=True).start()
 
 start_background()

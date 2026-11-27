@@ -126,9 +126,10 @@ COLORS = {"clover": ((15, 60, 35), (5, 20, 15)), "crown": ((70, 20, 70), (20, 5,
 
 
 def card_bytes(key, title, subtitle):
-    own = os.path.join(ASSETS, "gifts", f"{key}.png")
-    if os.path.exists(own):
-        return open(own, "rb").read()
+    for ext in ("jpg", "png"):
+        own = os.path.join(ASSETS, "gifts", f"{key}.{ext}")
+        if os.path.exists(own):
+            return open(own, "rb").read()
     img = _bg(*COLORS.get(key, ((40, 20, 60), (10, 5, 20))))
     d = ImageDraw.Draw(img)
     rnd = random.Random(key)
