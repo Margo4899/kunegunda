@@ -1446,6 +1446,10 @@ def handle_love(peer_id, from_id, cmid):
     else:
         partner_tag = pname if npc else mention(pid, pname or 'кто-то')
         text = f"💘 пара дня: {mention(from_id, name or 'ты')} + {partner_tag}\n{reply}"
+    if "love_match" in love_codes:
+        text += f"\n💞 совместимость: {random.randint(42, 100)}%"
+    if "love_quest" in love_codes:
+        text += f"\n🎯 задание для пары: {random.choice(LOVE_QUESTS)}"
     if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, text)):
         send_vk_message(peer_id, text, reply_to_cmid=cmid)
 
@@ -1672,11 +1676,11 @@ GIFT_ACTIVE_DAYS = 3            # выбираем среди тех, кто п�
 # key: (название, эффект, текст на карточке, что дает, история)
 _DECK = {
  "hourglass_desert": ("Пустынные часы", "extra1", "+1 гадание в день", "+1 гадание в день (4 вместо 3)", "часы, в которых песок течет вверх, потому что время с ними на твоей стороне"),
- "luck_potion":      ("Зелье удачи", "extra2", "+2 гадания в день", "+2 гадания в день (5 вместо 3)", "зелье, от которого удача прилипает, как жвачка к подошве"),
- "horseshoe":        ("Золотая подкова", "extra3", "+3 гадания в день", "+3 гадания в день (6 вместо 3)", "подкова, которую потерял конь самого везучего пирата тропикании"),
+ "luck_potion":      ("Зелье удачи", "luck_percent", "Процент удачи дня", "к каждому гаданию я считаю твой процент удачи на сегодня", "зелье, от которого удача прилипает, как жвачка к подошве"),
+ "horseshoe":        ("Золотая подкова", "love_match", "Совместимость пары", "к паре дня я добавляю процент вашей совместимости", "подкова, которую потерял конь самого везучего пирата тропикании"),
  "sand_hourglass":   ("Песочные часы", "double", "Два предсказания в одном", "каждое гадание сразу с двумя предсказаниями", "часы, которые я выиграла в споре у песчаной бури"),
- "forget_potion":    ("Зелье забвения", "love_3", "3 пары дня в день", "пару дня можно искать 3 раза в день: я забываю, что уже искала", "зелье, после которого я забыла, куда положила свою любимую метлу"),
- "happy_key":        ("Ключ к счастью", "love_extra", "2 пары дня в день", "пару дня можно искать 2 раза в день", "ключ, который открывает любые двери, кроме моей кладовки"),
+ "forget_potion":    ("Зелье забвения", "love_quest", "Задание для пары дня", "к паре дня я даю вам смешное совместное задание в аватарии", "зелье, после которого я забыла, куда положила свою любимую метлу"),
+ "happy_key":        ("Ключ к счастью", "love_extra", "+1 пара дня в день", "пару дня можно искать 2 раза в день вместо 1", "ключ, который открывает любые двери, кроме моей кладовки"),
  "mirror":           ("Зеркало двух судеб", "love_real", "Пара дня только из людей", "пара дня всегда настоящий человек из беседы, без ботов и предметов", "зеркало, в котором отражается не лицо, а тот, кто о тебе думает"),
  "button":           ("Проклятая пуговица", "love_cursed", "Пара дня — бот или предмет", "шуточное проклятие: пара дня всегда игровой бот, предмет или одиночество", "пуговица с плаща злющего колдуна, достается только самым смелым"),
  "moon_amulet":      ("Лунный амулет", "love_theme", "Гадания о любви", "все твои гадания про любовь и романтику", "амулет, который светится, когда о тебе кто-то думает перед сном"),
@@ -1697,8 +1701,15 @@ _DECK = {
  "illusion_mask":    ("Маска иллюзий", "npc_mask", "Гадаю, будто ты бот Аватарии", "я принимаю тебя за игрового бота аватарии и гадаю тебе как ему", "маска, в которой даже охранник у VIP-входа примет тебя за своего"),
 }
 ARTIFACTS = {k: {"name": v[0], "code": v[1], "effect": v[3], "story": v[4]} for k, v in _DECK.items()}
-GIFT_EXTRA_BY_CODE = {"extra1": 1, "extra2": 2, "extra3": 3}
-LOVE_PER_DAY_BY_CODE = {"love_extra": 2, "love_3": 3}
+GIFT_EXTRA_BY_CODE = {"extra1": 1}
+LOVE_PER_DAY_BY_CODE = {"love_extra": 2}
+GIFT_RARE_CODES = {"extra1": 0.25, "love_extra": 0.25}   # дополнительные попытки выпадают редко
+ADMIN_SCREEN_NAMES = {"sargotmann"}
+LOVE_QUESTS = ["вместе прокатиться на гонках на серфах и проиграть друг другу", "сделать совместное фото в фотостудии с самыми глупыми лицами",
+               "станцевать в клубе под первую же песню диджея", "покормить питомцев друг друга в парке питомцев",
+               "посидеть на качелях у пальмы и молчать ровно минуту", "подарить друг другу самый нелепый подарок из магазина",
+               "сыграть бой на подушках, проигравший делает комплимент", "сходить вместе в кафе и заказать одно и то же",
+               "обменяться самым смешным стикером в беседе", "вместе пройти мини-игру и не поссориться"]
 GIFT_RECENT_WINNERS = 4         # последних счастливчиков стараемся не выбирать снова
 GIFT_MIN_MESSAGES = 2           # сколько сообщений за 3 дня нужно, чтобы попасть в розыгрыш
 ADMIN_IDS = {691070777} | {int(x) for x in LIMIT_EXEMPT_IDS if x.isdigit()}
@@ -1714,8 +1725,9 @@ _LOVE_HOW = "пиши «суженый» или «суженая», как об�
 GIFT_HOW_TO = {c: _FORTUNE_HOW for c in ("double", "royal", "royal_decree", "royal_dark", "bright", "cursed", "love_theme",
                                          "prophecy", "emoji", "lore", "talisman", "lucky_number", "admirer", "gossip",
                                          "rhyme", "wish", "npc_mask")}
-GIFT_HOW_TO.update({c: "пиши «гадать», как обычно, лимит уже увеличен" for c in ("extra1", "extra2", "extra3")})
-GIFT_HOW_TO.update({c: _LOVE_HOW for c in ("love_extra", "love_3", "love_real", "love_cursed")})
+GIFT_HOW_TO["luck_percent"] = _FORTUNE_HOW
+GIFT_HOW_TO["extra1"] = "пиши «гадать», как обычно, лимит уже увеличен"
+GIFT_HOW_TO.update({c: _LOVE_HOW for c in ("love_extra", "love_match", "love_quest", "love_real", "love_cursed")})
 
 def codes_of(user_id):
     return {ARTIFACTS[a]["code"] for a in active_artifacts(user_id) if a in ARTIFACTS}
@@ -1879,7 +1891,8 @@ def give_gift(peer_id, forced_user=None):
         if not winner:
             print(f"🎁 [ДАРЫ] В беседе {peer_id} некому дарить")
             return
-    artifact = random.choice([k for k in ARTIFACTS if k != prev_art])
+    pool = [k for k in ARTIFACTS if k != prev_art]
+    artifact = random.choices(pool, weights=[GIFT_RARE_CODES.get(ARTIFACTS[k]["code"], 1.0) for k in pool])[0]
     a = ARTIFACTS[artifact]
     name, profile_sex, last_name = get_vk_user_full(winner)
     tone = pick_tone(friendly_only=True)
@@ -1922,6 +1935,9 @@ def gift_loop():
 GIFTS_WORDS = ("дары", "дар", "!дары", "!дар", "артефакт", "артефакты")
 MY_GIFTS_WORDS = ("мои дары", "!мои дары", "мои артефакты", "коллекция даров")
 
+def is_admin(user_id):
+    return user_id in ADMIN_IDS or (user_id and user_id > 0 and get_screen_name(user_id).lower() in ADMIN_SCREEN_NAMES)
+
 def handle_gifts_command(peer_id, from_id, text, cmid):
     """True, если сообщение было командой про дары."""
     t = text.strip().lower()
@@ -1951,7 +1967,7 @@ def handle_gifts_command(peer_id, from_id, text, cmid):
             f"🎁 сейчас дар у {mention(g['user_id'], '@' + get_screen_name(g['user_id']))}: {a.get('name')}\n"
             f"✨ {a.get('effect')}\n👉 {GIFT_HOW_TO.get(a.get('code'), '')}\n⏳ действует еще {when}\n\n{GIFT_RULES_TEXT}", reply_to_cmid=cmid)
         return True
-    if t.startswith("!вручить дар") and from_id in ADMIN_IDS:
+    if t.startswith("!вручить дар") and is_admin(from_id):
         target = re.search(r"\[id(\d+)\|", text)
         give_gift(peer_id, int(target.group(1)) if target else None)
         return True
@@ -1994,6 +2010,8 @@ def apply_gift_extras(reply, codes, peer_id, from_id, sex, gossip_name=None):
     if "gossip" in codes and gossip_name and gossip_name[0].lower()[:3] not in reply.lower():
         verb = "задумала" if gossip_name[1] == "f" else "задумал"
         reply += f"\n🦜 попугай шепчет, что {gossip_name[0]} сегодня что-то {verb} в аватарии..."
+    if "luck_percent" in codes:
+        reply += f"\n🧪 твой процент удачи на сегодня: {random.randint(60, 100)}%"
     if "lucky_number" in codes:
         reply += f"\n🍀 твое счастливое число на сегодня: {random.randint(1, 99)}"
     if "talisman" in codes:
