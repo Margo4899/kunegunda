@@ -137,6 +137,13 @@ def check_and_update_limit_supabase(user_id):
     ok = _check_limit(user_id)
     return ok
 
+def user_daily_limit(user_id):
+    """3 гадания в день, а с клевером или подковой больше."""
+    try:
+        return DAILY_LIMIT + max([GIFT_EXTRA_FORTUNES.get(a, 0) for a in active_artifacts(user_id)] or [0])
+    except Exception:
+        return DAILY_LIMIT
+
 def _check_limit(user_id):
     if str(user_id) in LIMIT_EXEMPT_IDS:
         print(f"🧪 [ТЕСТ] Лимит для user_id={user_id} отключен (LIMIT_EXEMPT_IDS).")
@@ -145,8 +152,9 @@ def _check_limit(user_id):
         print("⚠️ [SUPABASE] Клиент Supabase не инициализирован, пропускаем лимит.")
         return True
     today = msk_now().strftime("%Y-%m-%d")
+    limit = user_daily_limit(user_id)
     try:
-        print(f"📊 [SUPABASE] Проверка лимита для user_id={user_id}...")
+        print(f"📊 [SUPABASE] Проверка лимита для user_id={user_id} (в день: {limit})...")
         res = supabase.table("user_limits").select("*").eq("user_id", user_id).execute()
         data = res.data
 
@@ -157,7 +165,7 @@ def _check_limit(user_id):
                 "count": 1,
                 "last_date": today
             }).execute()
-            _last_remaining[user_id] = DAILY_LIMIT - 1
+            _last_remaining[user_id] = limit - 1
             return True
 
         user_record = data[0]
@@ -170,10 +178,10 @@ def _check_limit(user_id):
                 "count": 1,
                 "last_date": today
             }).eq("user_id", user_id).execute()
-            _last_remaining[user_id] = DAILY_LIMIT - 1
+            _last_remaining[user_id] = limit - 1
             return True
 
-        if count >= DAILY_LIMIT:
+        if count >= limit:
             print(f"⚠️ [SUPABASE] Лимит исчерпан для user_id={user_id} (уже {count} гаданий).")
             return False
 
@@ -181,7 +189,7 @@ def _check_limit(user_id):
         supabase.table("user_limits").update({
             "count": count + 1
         }).eq("user_id", user_id).execute()
-        _last_remaining[user_id] = DAILY_LIMIT - (count + 1)
+        _last_remaining[user_id] = limit - (count + 1)
         return True
 
     except Exception as e:
@@ -1101,6 +1109,8 @@ BOT_HELP_TEXT = """✨ что я умею:
 
 💘 напиши «суженый» или «суженая», и я найду тебе пару дня среди участников беседы. раз в день.
 
+🎁 раз в 3 дня вечером я дарю волшебный артефакт тому, кого выберет шар (из тех, кто пишет в беседе). напиши «дары», чтобы узнать, у кого он сейчас, или «мои дары», чтобы посмотреть свою коллекцию.
+
 👋 новичков в беседе встречаю сама и делаю им бесплатный расклад.
 
 ⚠️ чтобы я видела все ваши сообщения, сделайте меня администратором беседы."""
@@ -1180,7 +1190,8 @@ def strip_leading_name(text, user_name):
 
 # Короткая подсказка новичку отдельным абзацем
 NEWCOMER_HELP = """🃏 напиши «гадать», и я сделаю тебе предсказание (до 3 в день).
-💘 напиши «суженый» или «суженая», и я найду тебе пару дня в беседе."""
+💘 напиши «суженый» или «суженая», и я найду тебе пару дня в беседе.
+🎁 раз в 3 дня я дарю кому-то из беседы волшебный артефакт, напиши «дары»."""
 
 LOVE_WORDS = ("суженый", "суженая", "суженного", "суженую")
 
@@ -1242,6 +1253,14 @@ LOVE_USED_REPLIES = [
     "{name}, свечи на любовь уже догорели, новые зажгу только завтра.",
 ]
 
+def mirror_second_try(user_id, today):
+    """Зеркало двух судеб: вторая пара за день."""
+    if "mirror" in active_artifacts(user_id) and _love_extra_used.get(user_id) != today:
+        _love_extra_used[user_id] = today
+        print(f"🪞 [ДАРЫ] Вторая пара дня по зеркалу для {user_id}")
+        return True
+    return False
+
 def check_and_mark_love(user_id):
     """True, если сегодня пару еще не искали (и сразу отмечаем). Хранится в Supabase, таблица love_limits."""
     if str(user_id) in LIMIT_EXEMPT_IDS:
@@ -1252,13 +1271,13 @@ def check_and_mark_love(user_id):
         try:
             res = supabase.table("love_limits").select("*").eq("user_id", user_id).execute()
             if res.data and str(res.data[0].get("last_date")) == today:
-                return False
+                return mirror_second_try(user_id, today)
             supabase.table("love_limits").upsert({"user_id": user_id, "last_date": today}).execute()
             return True
         except Exception as e:
             print(f"⚠️ [SUPABASE] love_limits недоступна, считаю в памяти: {e}")
     if love_used.get(user_id) == today:
-        return False
+        return mirror_second_try(user_id, today)
     love_used[user_id] = today
     return True
 
@@ -1436,6 +1455,7 @@ def process_event_async(data):
         action = msg.get('action') or {}
 
         print(f"📩 [ДАННЫЕ] peer_id={peer_id}, from_id={from_id}, cmid={cmid}, text='{text}'")
+        note_activity(peer_id, from_id)
 
         # 1. Приглашение в беседу
         if action.get('type') in ['chat_invite_user', 'chat_invite_user_by_link']:
@@ -1516,6 +1536,10 @@ def process_event_async(data):
             send_vk_message(peer_id, reply)
             return
 
+        # Дары Кунегунды
+        if handle_gifts_command(peer_id, from_id, msg.get('text', ''), cmid):
+            return
+
         # 2. Пара дня
         if is_love_command(text):
             print("💘 [СОБЫТИЕ] Ищем пару дня!")
@@ -1549,7 +1573,15 @@ def process_event_async(data):
                 npc = pick_fresh("npc", without_hot(GAME_NPCS, CURRENT_HOT["themes"]), keep=8)
                 mood = f"шуточный роман (шип) с игровым ботом: {npc_desc(npc)}. по-доброму и смешно, связав это с фактом"
             tone = pick_tone()
-            lore = pick_fresh("lore", without_hot(KUNEGUNDA_LORE, CURRENT_HOT["themes"]), keep=20) if KUNEGUNDA_LORE and random.random() < LORE_CHANCE else None
+            arts = active_artifacts(from_id)
+            lore = pick_fresh("lore", without_hot(KUNEGUNDA_LORE, CURRENT_HOT["themes"]), keep=20) if KUNEGUNDA_LORE and (random.random() < LORE_CHANCE or "cup" in arts) else None
+            gossip = ""
+            if "feather" in arts:
+                others = [m for m in get_chat_members(peer_id) if m[0] != from_id] if peer_id > 2000000000 else []
+                if others:
+                    o = random.choice(others)
+                    gossip = (f"\n            у игрока перо болтливого попугая: добавь в конце короткую добрую смешную сплетню про участника беседы {o[1]} "
+                              f"(придумай, что попугай подслушал про него в аватарии), без обидного.")
             fmt = pick_fresh("format", FORTUNE_FORMATS, keep=6) if random.random() < FORMAT_CHANCE else None
             angle = pick_fresh("angle", FORTUNE_ANGLES, keep=6)
             print(f"📚 [ФАКТ] {topic}: {fact}" + (f" | главное: {focus}" if focus else ""))
@@ -1574,9 +1606,11 @@ def process_event_async(data):
             3. твое настроение сейчас: {tone}. это должно быть сразу заметно.
             4. не больше {max_sent} коротких предложений, всего не больше {max_words} слов.
             5. смысл должен быть понятен с первого прочтения, без нагромождений.
+               из ответа должно быть сразу ясно, что это про игру аватария: назови место, предмет или событие из факта
+               его настоящим игровым названием (например «гонки на серфах», «парк питомцев», «бал темных сил»), не перефразируй до неузнаваемости.
             5а. сегодня {msk_now().strftime("%d.%m.%Y")}. если факт про акцию, праздник или событие, которое уже прошло (ярмарка, хэллоуин, день семьи, пятница 13, весенний пруд, золотая осень и т.п.), гадай про следующее такое же событие: например после 10-й ярмарки будет 11-я, после прошлого хэллоуина будет следующий. предположи, что там будет похожее, как опытная гадалка.
             5б. это предсказание о будущем: не утверждай, что игрок уже что-то сделал. преувеличивать и фантазировать вокруг факта можно, но не тащи предметы из других тем игры и случайные вещи (салаты, отвертки и т.п.).
-            6. обращайся на ты. {person_rule(name, sex, last_name)}{lore_rule}
+            6. обращайся на ты. {person_rule(name, sex, last_name)}{lore_rule}{gift_prompt_rule(from_id)}{gossip}
             {avoid_repeats_rule(from_id)}
             """
             usr_prompt = "погадай мне."
@@ -1603,6 +1637,261 @@ def process_event_async(data):
 # --- 6. LONG POLL: бот сам забирает сообщения из ВК ---
 # ВК не может подключиться к Render (Can't connect to server),
 # поэтому вместо Callback API используем Bots Long Poll API.
+# ===================== ДАРЫ КУНЕГУНДЫ =====================
+# Раз в 3 дня вечером Кунегунда тянет из колоды артефакт и дарит его случайному
+# активному участнику беседы. Артефакт действует 3 дня, пока не придет новый дар.
+from gift_cards import card_bytes
+
+GIFT_EVERY_DAYS = 3
+GIFT_HOURS_MSK = (18, 22)       # вручаем вечером по МСК
+GIFT_ACTIVE_DAYS = 3            # выбираем среди тех, кто писал в беседе за эти дни
+
+ARTIFACTS = {
+    "clover":    {"name": "Четырехлистный клевер", "effect": "+1 гадание в день (4 вместо 3)",
+                  "story": "клевер, который я сорвала у входа в свою пещеру в самую грозовую ночь"},
+    "horseshoe": {"name": "Золотая подкова", "effect": "+2 гадания в день (5 вместо 3)",
+                  "story": "подкова, которую потерял конь самого везучего пирата тропикании"},
+    "crown":     {"name": "Корона беседы", "effect": "титул царя или царицы беседы, гадания с королевскими почестями",
+                  "story": "корона, которую я нашла в сундуке, пока гонялась за сбежавшей ящерицей"},
+    "mirror":    {"name": "Зеркало двух судеб", "effect": "пару дня можно искать 2 раза в день",
+                  "story": "зеркало, в котором отражается не лицо, а тот, кто о тебе думает"},
+    "ball":      {"name": "Хрустальный шарик-малыш", "effect": "все гадания светлые и с хорошим концом",
+                  "story": "детеныш моего большого шара, он видит только хорошее"},
+    "cup":       {"name": "Чашка Кунегунды", "effect": "в каждом гадании я выдаю тебе секрет о себе",
+                  "story": "моя любимая чашка со сколом, из нее я гадала еще бабушке"},
+    "button":    {"name": "Проклятая пуговица", "effect": "шуточное проклятие: гадания мрачные и драматичные, но с хэппи-эндом",
+                  "story": "пуговица с плаща одного злющего колдуна, никто не хочет ее брать, поэтому достается самым смелым"},
+    "feather":   {"name": "Перо болтливого попугая", "effect": "в каждом гадании я выдаю сплетню про кого-то из беседы",
+                  "story": "перо попугая, который подслушивал у всех окон тропикании"},
+}
+GIFT_EXTRA_FORTUNES = {"clover": 1, "horseshoe": 2}
+
+_gifts_mem = []        # если таблицы в Supabase нет: [{peer_id, user_id, artifact, given_at, expires_at}]
+_activity_mem = {}     # (peer_id, user_id) -> timestamp
+_activity_saved = {}   # когда последний раз писали в базу
+_love_extra_used = {}  # user_id -> дата второй пары (зеркало)
+
+def _iso(dt):
+    return dt.astimezone(timezone.utc).isoformat()
+
+def _parse_dt(v):
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def note_activity(peer_id, user_id):
+    """Запоминаем, кто пишет в беседе (для выбора счастливчика)."""
+    if not peer_id or peer_id < 2000000000 or not user_id or user_id < 0:
+        return
+    now = time.time()
+    _activity_mem[(peer_id, user_id)] = now
+    if supabase and now - _activity_saved.get((peer_id, user_id), 0) > 3600:
+        _activity_saved[(peer_id, user_id)] = now
+        try:
+            supabase.table("kunegunda_activity").upsert(
+                {"peer_id": peer_id, "user_id": user_id, "last_seen": _iso(datetime.now(timezone.utc))}).execute()
+        except Exception as e:
+            print(f"⚠️ [ДАРЫ] Таблица kunegunda_activity недоступна: {e}")
+
+def active_users(peer_id, days=GIFT_ACTIVE_DAYS):
+    since = time.time() - days * 86400
+    users = {u for (p, u), t in _activity_mem.items() if p == peer_id and t >= since}
+    if supabase:
+        try:
+            res = supabase.table("kunegunda_activity").select("user_id,last_seen").eq("peer_id", peer_id).execute()
+            for r in res.data or []:
+                dt = _parse_dt(r.get("last_seen"))
+                if dt and dt.timestamp() >= since:
+                    users.add(int(r["user_id"]))
+        except Exception:
+            pass
+    return list(users)
+
+def known_peers():
+    peers = {p for (p, _u) in _activity_mem}
+    if supabase:
+        try:
+            res = supabase.table("kunegunda_activity").select("peer_id").execute()
+            peers |= {int(r["peer_id"]) for r in res.data or []}
+        except Exception:
+            pass
+    return peers
+
+def gifts_of(peer_id=None, user_id=None):
+    rows = []
+    if supabase:
+        try:
+            q = supabase.table("kunegunda_gifts").select("*")
+            if peer_id:
+                q = q.eq("peer_id", peer_id)
+            if user_id:
+                q = q.eq("user_id", user_id)
+            rows = q.order("given_at", desc=True).execute().data or []
+        except Exception as e:
+            print(f"⚠️ [ДАРЫ] Таблица kunegunda_gifts недоступна, работаю в памяти: {e}")
+            rows = []
+    if not rows:
+        rows = [g for g in reversed(_gifts_mem)
+                if (not peer_id or g["peer_id"] == peer_id) and (not user_id or g["user_id"] == user_id)]
+    return rows
+
+def current_gift(peer_id):
+    rows = gifts_of(peer_id=peer_id)
+    if not rows:
+        return None
+    exp = _parse_dt(rows[0].get("expires_at"))
+    return rows[0] if exp and exp > datetime.now(timezone.utc) else None
+
+def active_artifacts(user_id):
+    """Какие дары сейчас действуют у человека (в любой беседе)."""
+    now = datetime.now(timezone.utc)
+    return [g["artifact"] for g in gifts_of(user_id=user_id)
+            if (_parse_dt(g.get("expires_at")) or now) > now]
+
+def save_gift(peer_id, user_id, artifact):
+    now = datetime.now(timezone.utc)
+    row = {"peer_id": peer_id, "user_id": user_id, "artifact": artifact,
+           "given_at": _iso(now), "expires_at": _iso(now + timedelta(days=GIFT_EVERY_DAYS))}
+    _gifts_mem.append(row)
+    if supabase:
+        try:
+            supabase.table("kunegunda_gifts").insert(row).execute()
+        except Exception as e:
+            print(f"⚠️ [ДАРЫ] Не сохранила дар в базу: {e}")
+
+def upload_card(peer_id, artifact):
+    a = ARTIFACTS[artifact]
+    path = f"/tmp/gift_{artifact}.png"
+    try:
+        with open(path, "wb") as f:
+            f.write(card_bytes(artifact, a["name"], a["effect"]))
+        server = vk_api_call("photos.getMessagesUploadServer", peer_id=peer_id)
+        with open(path, "rb") as f:
+            up = requests.post(server["upload_url"], files={"photo": ("gift.png", f.read(), "image/png")}, timeout=60).json()
+        saved = vk_api_call("photos.saveMessagesPhoto", photo=up["photo"], server=up["server"], hash=up["hash"])[0]
+        return f"photo{saved['owner_id']}_{saved['id']}"
+    except Exception as e:
+        print(f"⚠️ [ДАРЫ] Картинка дара не загрузилась: {e}")
+        return None
+
+def send_with_photo(peer_id, text, attachment=None):
+    if not attachment:
+        return send_vk_message(peer_id, text)
+    try:
+        vk_api_call("messages.send", peer_ids=peer_id, message=text, attachment=attachment,
+                    random_id=random.randint(1, 2**31 - 1))
+        print(f"📤 [ДАРЫ] Отправлено с картинкой в {peer_id}")
+    except Exception as e:
+        print(f"⚠️ [ДАРЫ] С картинкой не вышло ({e}), шлю текстом")
+        send_vk_message(peer_id, text)
+
+def give_gift(peer_id, forced_user=None):
+    """Церемония дара в беседе."""
+    prev = gifts_of(peer_id=peer_id)
+    prev_user = prev[0]["user_id"] if prev else None
+    prev_art = prev[0]["artifact"] if prev else None
+    if forced_user:
+        winner = forced_user
+    else:
+        candidates = [u for u in active_users(peer_id) if u != prev_user]
+        if len(candidates) < 1:
+            candidates = [m[0] for m in get_chat_members(peer_id) if m[0] != prev_user]
+        if not candidates:
+            print(f"🎁 [ДАРЫ] В беседе {peer_id} некому дарить")
+            return
+        winner = random.choice(candidates)
+    artifact = random.choice([k for k in ARTIFACTS if k != prev_art])
+    a = ARTIFACTS[artifact]
+    name, profile_sex, last_name = get_vk_user_full(winner)
+    sex = resolve_sex(name, profile_sex)
+    tone = pick_tone(friendly_only=True)
+    story = generate_ai_response(SYSTEM_PROMPT_BASE + f"""
+        ты раз в три дня даришь одному участнику беседы волшебный артефакт. сегодня шар выбрал {name or 'игрока'}.
+        артефакт: {a['name']} — это {a['story']}. что он дает: {a['effect']}.
+        торжественно и смешно объяви, почему шар выбрал именно этого человека (придумай забавную причину),
+        и вручи артефакт. настроение: {tone}. 2-3 коротких предложения, обращение на ты, имя не пиши. {person_rule(name, sex, last_name, allow_play=False)}
+        """, "вручи дар.", max_sentences=3, max_chars=330, names=(name, last_name))
+    story = fix_gender_words(story, sex)
+    save_gift(peer_id, winner, artifact)
+    who = mention(winner, name or "счастливчик")
+    lucky = {"m": "счастливчик", "f": "счастливица"}.get(sex, "счастливчик")
+    text = (f"🎁✨ ДАР КУНЕГУНДЫ ✨🎁\n\n"
+            f"шар выбрал: {who}, {lucky} трех ближайших дней!\n\n"
+            f"{story}\n\n"
+            f"🔮 {a['name']}\n"
+            f"✨ действует 3 дня: {a['effect']}\n\n"
+            f"следующий дар через 3 дня. напиши «дары», чтобы узнать, у кого он сейчас.")
+    print(f"🎁 [ДАРЫ] Беседа {peer_id}: {winner} получает {artifact}")
+    send_with_photo(peer_id, text, upload_card(peer_id, artifact))
+
+def gift_loop():
+    """Раз в 15 минут смотрим, не пора ли вручить дар."""
+    time.sleep(60)
+    while True:
+        try:
+            hour = msk_now().hour
+            if GIFT_HOURS_MSK[0] <= hour < GIFT_HOURS_MSK[1]:
+                for peer in known_peers():
+                    last = gifts_of(peer_id=peer)
+                    last_dt = _parse_dt(last[0]["given_at"]) if last else None
+                    if not last_dt or datetime.now(timezone.utc) - last_dt >= timedelta(days=GIFT_EVERY_DAYS) - timedelta(hours=2):
+                        if len(active_users(peer)) >= 2:
+                            give_gift(peer)
+        except Exception as e:
+            print(f"⚠️ [ДАРЫ] Ошибка в цикле даров: {e}")
+        time.sleep(900)
+
+GIFTS_WORDS = ("дары", "дар", "!дары", "!дар", "артефакт", "артефакты")
+MY_GIFTS_WORDS = ("мои дары", "!мои дары", "мои артефакты", "коллекция даров")
+
+def handle_gifts_command(peer_id, from_id, text, cmid):
+    """True, если сообщение было командой про дары."""
+    t = text.strip().lower()
+    if t in MY_GIFTS_WORDS:
+        rows = gifts_of(user_id=from_id)
+        name = get_vk_user_full(from_id)[0]
+        if not rows:
+            send_vk_message(peer_id, f"{mention(from_id, name)}, у тебя пока ни одного дара. шар еще присматривается к тебе 👀", reply_to_cmid=cmid)
+            return True
+        counts = {}
+        for r in rows:
+            counts[r["artifact"]] = counts.get(r["artifact"], 0) + 1
+        lines = [f"🔮 {ARTIFACTS[k]['name']}" + (f" ×{c}" if c > 1 else "") for k, c in counts.items() if k in ARTIFACTS]
+        send_vk_message(peer_id, f"🎁 коллекция даров {mention(from_id, name)}:\n" + "\n".join(lines), reply_to_cmid=cmid)
+        return True
+    if t in GIFTS_WORDS:
+        g = current_gift(peer_id)
+        if not g:
+            send_vk_message(peer_id, "🎁 сейчас дар ни у кого. раз в 3 дня вечером я вытягиваю артефакт и дарю его тому, кто был в беседе. пиши почаще, чтобы шар тебя заметил!", reply_to_cmid=cmid)
+            return True
+        a = ARTIFACTS.get(g["artifact"], {})
+        left = _parse_dt(g["expires_at"]) - datetime.now(timezone.utc)
+        hours = max(1, int(left.total_seconds() // 3600))
+        when = f"{hours // 24} дн. {hours % 24} ч." if hours >= 24 else f"{hours} ч."
+        name = get_vk_user_full(g["user_id"])[0]
+        send_vk_message(peer_id,
+            f"🎁 сейчас дар у {mention(g['user_id'], name or 'кого-то')}: {a.get('name')}\n"
+            f"✨ {a.get('effect')}\n⏳ действует еще {when}, потом я выберу нового счастливчика.", reply_to_cmid=cmid)
+        return True
+    if t.startswith("!вручить дар") and str(from_id) in LIMIT_EXEMPT_IDS:
+        target = re.search(r"\[id(\d+)\|", text)
+        give_gift(peer_id, int(target.group(1)) if target else None)
+        return True
+    return False
+
+def gift_prompt_rule(user_id):
+    """Добавка в промпт гадания, если у человека есть дар."""
+    arts = active_artifacts(user_id)
+    rules = []
+    if "crown" in arts:
+        rules.append("у этого игрока корона беседы: обращайся к нему с королевскими почестями (ваше величество, государыня или государь), торжественно и смешно.")
+    if "ball" in arts:
+        rules.append("у игрока хрустальный шарик-малыш: предсказание обязательно светлое и с хорошим концом.")
+    if "button" in arts:
+        rules.append("на игроке шуточное проклятие пуговицы: предскажи мрачно и драматично, но закончи хэппи-эндом.")
+    return ("\n            " + " ".join(rules)) if rules else ""
+
 def vk_api_call(method, **params):
     params.update({"access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION})
     res = requests.post(f"https://api.vk.com/method/{method}", data=params, timeout=30).json()
@@ -1668,6 +1957,7 @@ def start_background():
     _started = True
     threading.Thread(target=long_poll_loop, daemon=True).start()
     threading.Thread(target=keep_awake_loop, daemon=True).start()
+    threading.Thread(target=gift_loop, daemon=True).start()
 
 start_background()
 

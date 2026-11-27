@@ -3,3 +3,4 @@ groq
 requests
 supabase
 gunicorn
+Pillow
