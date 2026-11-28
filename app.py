@@ -1109,7 +1109,7 @@ BOT_HELP_TEXT = """✨ что я умею:
 
 💘 напиши «суженый» или «суженая», и я найду тебе пару дня среди участников беседы. раз в день.
 
-🎁 раз в 3 дня вечером я дарю всей беседе волшебный артефакт: 3 дня он меняет гадания и пары дня для всех. напиши «дары», чтобы узнать, какой сейчас, или «коллекция», чтобы посмотреть, какие уже были.
+🎁 раз в 3 дня вечером я дарю всей беседе волшебный артефакт: целые сутки он меняет гадания и пары дня для всех. напиши «дары», чтобы узнать, какой сейчас, или «коллекция», чтобы посмотреть, какие уже были.
 
 👋 новичков в беседе встречаю сама и делаю им бесплатный расклад.
 
@@ -1671,6 +1671,7 @@ def process_event_async(data):
 from gift_cards import card_bytes
 
 GIFT_EVERY_DAYS = 3
+GIFT_DURATION_DAYS = 1          # артефакт действует сутки
 GIFT_HOURS_MSK = (18, 22)       # вручаем вечером по МСК
 GIFT_ACTIVE_DAYS = 3            # выбираем среди тех, кто писал в беседе за эти дни
 
@@ -1717,7 +1718,7 @@ ADMIN_IDS = {691070777} | {int(x) for x in LIMIT_EXEMPT_IDS if x.isdigit()}
 
 GIFT_RULES_TEXT = ("📜 как это работает:\n"
                    "• раз в 3 дня вечером я дарю всей беседе новый артефакт\n"
-                   "• он действует для всех 3 дня, потом шар выберет следующий\n"
+                   "• он действует для всех сутки, а через 3 дня придет следующий\n"
                    "• «дары» — какой артефакт сейчас, «коллекция» — что у беседы уже было")
 
 # Как пользоваться даром: ничего нового учить не надо, все работает через обычные команды
@@ -1850,7 +1851,7 @@ def save_gift(peer_id, user_id, artifact):
     end_active_gifts(peer_id)
     now = datetime.now(timezone.utc)
     row = {"peer_id": peer_id, "user_id": user_id, "artifact": artifact,
-           "given_at": _iso(now), "expires_at": _iso(now + timedelta(days=GIFT_EVERY_DAYS))}
+           "given_at": _iso(now), "expires_at": _iso(now + timedelta(days=GIFT_DURATION_DAYS))}
     _gifts_mem.append(row)
     if supabase:
         try:
@@ -1931,7 +1932,7 @@ def give_gift(peer_id, forced_user=None):
         """, "расскажи легенду артефакта.", max_sentences=2, max_chars=240)
     save_gift(peer_id, 0, artifact)
     text = (f"🎁✨ ДАР КУНЕГУНДЫ ДЛЯ ВСЕЙ БЕСЕДЫ ✨🎁\n\n"
-            f"на 3 дня вам достается {a['name']}!\n"
+            f"на сутки вам достается {a['name']}!\n"
             f"🔮 {story}\n\n"
             f"✨ что это значит: {a['effect']}\n"
             f"👉 {GIFT_HOW_TO[a['code']]}\n\n"
@@ -1942,7 +1943,7 @@ def give_gift(peer_id, forced_user=None):
 GIFT_LAUNCH_DATE = "2026-11-28"   # первая настоящая раздача вечером этого дня
 GIFT_INTRO_TEXT = ("✨ у меня появилась новая способность!\n\n"
                    "раз в 3 дня вечером я буду дарить всей беседе волшебный артефакт. "
-                   "3 дня он меняет мои гадания и пары дня для всех: то стихи, то сплетни, то королевские почести. "
+                   "целые сутки он меняет мои гадания и пары дня для всех: то стихи, то сплетни, то королевские почести. "
                    "какой выпадет, решает судьба.\n\n"
                    "первый дар — прямо сейчас 👀")
 
@@ -1989,7 +1990,12 @@ def handle_gifts_command(peer_id, from_id, text, cmid):
     if t in GIFTS_WORDS:
         g = current_gift(peer_id)
         if not g:
-            send_vk_message(peer_id, "🎁 сейчас артефакта нет.\n\n" + GIFT_RULES_TEXT, reply_to_cmid=cmid)
+            rows = gifts_of(peer_id=peer_id)
+            nxt = ""
+            if rows and _parse_dt(rows[0].get("given_at")):
+                days_left = (_parse_dt(rows[0]["given_at"]) + timedelta(days=GIFT_EVERY_DAYS) - datetime.now(timezone.utc)).days + 1
+                nxt = f" следующий придет через {max(days_left, 1)} дн. вечером." if days_left > 0 else " следующий придет сегодня вечером."
+            send_vk_message(peer_id, "🎁 сейчас артефакта нет." + nxt + "\n\n" + GIFT_RULES_TEXT, reply_to_cmid=cmid)
             return True
         a = ARTIFACTS.get(g["artifact"], {})
         left = _parse_dt(g["expires_at"]) - datetime.now(timezone.utc)
@@ -2066,9 +2072,13 @@ def apply_gift_extras(reply, codes, peer_id, from_id, sex, gossip_name=None):
     return reply
 
 def gift_prompt_rule(user_id):
-    """Добавка в промпт гадания, если у человека есть дар."""
+    """Добавка в промпт гадания, если в беседе действует артефакт."""
     rules = [GIFT_PROMPT_RULES[c] for c in codes_of(user_id) if c in GIFT_PROMPT_RULES]
-    return ("\n            " + " ".join(rules)) if rules else ""
+    if not rules:
+        return ""
+    return ("\n            сегодня в беседе действует артефакт: " + " ".join(rules) +
+            "\n            это меняет только форму. смысл тот же: предсказание про факт выше из игры аватария, "
+            "место или событие из факта назови прямо, ничего не выдумывай вне игры, текст должен быть понятным.")
 
 def vk_api_call(method, **params):
     params.update({"access_token": VK_GROUP_TOKEN, "v": VK_API_VERSION})
