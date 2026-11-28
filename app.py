@@ -114,7 +114,7 @@ SYSTEM_PROMPT_BASE = """
 говоришь простым живым современным языком, как опытная гадалка с чувством юмора.
 пишешь только свою прямую речь от первого лица. никаких ремарок и описаний действий от третьего лица вроде зевает, вздыхает, ухмыляется, смотрит в шар. если зеваешь или ворчишь, скажи это своими словами, каждый раз по-новому.
 не затрагиваешь запрещенные темы: взломы, продажу аккаунтов, читы, накрутки, политику, религию, взрослые темы.
-изредка, примерно в каждом пятом ответе, можешь вставить одно старинное словечко и каждый раз разное: ныне, отныне, воистину, вскорости, сей, грядущее, давеча, авось, чую, ведаю, покуда, нонче, лиходей, отрада. слово зело не используй никогда, а ибо почти никогда.
+говори современным живым языком, без старинных слов (ныне, воистину, давеча, авось, нонче, сей, зело, ибо).
 
 строгие правила общения:
 1. всегда обращайся к участнику строго на ты.
@@ -315,7 +315,7 @@ def tidy_archaic(text):
     """Старинное слово только одно на ответ и не чаще, чем раз в несколько ответов."""
     if not text:
         return text
-    recent = sum(1 for r in list(RECENT_REPLIES)[-4:] if ARCHAIC_RE.search(r))
+    recent = sum(1 for r in list(RECENT_REPLIES)[-8:] if ARCHAIC_RE.search(r)) or (random.random() < 0.8)
     found = list(ARCHAIC_RE.finditer(text))
     keep_first = not recent and found
     repl = {"вскорости": "скоро", "покуда": "пока", "ныне": "сейчас", "нонче": "сегодня", "отныне": "теперь",
@@ -1912,14 +1912,13 @@ def upload_card(peer_id, artifact):
 
 def send_with_photo(peer_id, text, attachment=None):
     if not attachment:
-        return send_vk_message(peer_id, text)
+        return None
     try:
         vk_api_call("messages.send", peer_ids=peer_id, message=text, attachment=attachment,
                     random_id=random.randint(1, 2**31 - 1))
         print(f"📤 [ДАРЫ] Отправлено с картинкой в {peer_id}")
     except Exception as e:
-        print(f"⚠️ [ДАРЫ] С картинкой не вышло ({e}), шлю текстом")
-        send_vk_message(peer_id, text)
+        print(f"⚠️ [ДАРЫ] Сообщение с картинкой не ушло: {e}")
 
 def pick_gift_winner(peer_id, prev_gifts):
     """Среди активных: сначала те, кто дар еще не получал или получал давно; недавних счастливчиков пропускаем."""
@@ -1937,7 +1936,7 @@ def pick_gift_winner(peer_id, prev_gifts):
     # все активные недавно получали: берем того, кто получал давнее всех
     return min(candidates, key=lambda u: last_got.get(u) or datetime.min.replace(tzinfo=timezone.utc))
 
-def give_gift(peer_id, forced_user=None):
+def give_gift(peer_id, forced_user=None, retry=0, intro=False):
     """Церемония дара для всей беседы."""
     prev = gifts_of(peer_id=peer_id)
     # Колода: артефакт не повторяется, пока не выпадут все остальные
@@ -1959,6 +1958,16 @@ def give_gift(peer_id, forced_user=None):
         можно с легкой улыбкой, но без глупостей и без того, что к беседе не относится. настроение: {tone}.
         не перечисляй механику и цифры, название не повторяй, обращайся ко всем на вы.
         """, "расскажи легенду артефакта.", max_sentences=2, max_chars=240)
+    photo = upload_card(peer_id, artifact)
+    if not photo:
+        # без картинки дар не отправляем: попробуем позже
+        print(f"⚠️ [ДАРЫ] Картинка не загрузилась, дар в беседу {peer_id} пока не отправляю")
+        if retry < 3:
+            threading.Timer(120, give_gift, args=(peer_id,), kwargs={"retry": retry + 1, "intro": intro}).start()
+        return False
+    if intro:
+        send_vk_message(peer_id, GIFT_INTRO_TEXT)
+        time.sleep(4)
     save_gift(peer_id, 0, artifact)
     text = (f"🎁✨ ДАР КУНЕГУНДЫ ДЛЯ ВСЕЙ БЕСЕДЫ ✨🎁\n\n"
             f"на сутки вам достается {a['name']}!\n"
@@ -1967,7 +1976,8 @@ def give_gift(peer_id, forced_user=None):
             f"👉 {GIFT_HOW_TO[a['code']]}\n\n"
             f"{GIFT_RULES_TEXT}")
     print(f"🎁 [ДАРЫ] Беседа {peer_id} получает {artifact}")
-    send_with_photo(peer_id, text, upload_card(peer_id, artifact))
+    send_with_photo(peer_id, text, photo)
+    return True
 
 GIFT_LAUNCH_DATE = "2026-11-28"   # первая настоящая раздача вечером этого дня
 GIFT_INTRO_TEXT = ("✨ у меня появилась новая способность!\n\n"
@@ -1988,10 +1998,7 @@ def gift_loop():
                     last_dt = _parse_dt(last[0]["given_at"]) if last else None
                     if not last_dt or datetime.now(timezone.utc) - last_dt >= timedelta(days=GIFT_EVERY_DAYS) - timedelta(hours=2):
                         if len(active_users(peer)) >= 2:
-                            if not last:
-                                send_vk_message(peer, GIFT_INTRO_TEXT)
-                                time.sleep(5)
-                            give_gift(peer)
+                            give_gift(peer, intro=not last)
         except Exception as e:
             print(f"⚠️ [ДАРЫ] Ошибка в цикле даров: {e}")
         time.sleep(900)
@@ -2038,9 +2045,7 @@ def handle_gifts_command(peer_id, from_id, text, cmid):
         give_gift(peer_id)
         return True
     if t.startswith("!запустить дары") and is_admin(from_id):
-        send_vk_message(peer_id, GIFT_INTRO_TEXT)
-        time.sleep(4)
-        give_gift(peer_id)
+        give_gift(peer_id, intro=True)
         return True
     return False
 
@@ -2048,7 +2053,7 @@ GIFT_PROMPT_RULES = {
     "gothic": "в беседе мрачные дни: начни одной мрачной таинственной фразой, а закончи светлым хэппи-эндом. легко и с улыбкой, не страшно.",
     "news": "подай предсказание как короткую срочную новость из аватарии, начни со слова «молния:». весело, как живой ведущий, без канцелярских слов.",
     "love_theme": "в беседе лунные дни: гадание про любовь в аватарии, в этот раз про {love_topic}.",
-    "emoji": "начни ответ с 3-4 эмодзи, которые прямо изображают предметы из предсказания, а потом коротко расшифруй их.",
+    "emoji": "начни ответ с 3-4 эмодзи, которые прямо изображают предметы из предсказания, а потом сразу само предсказание (не перечисляй эмодзи словами). только предметы из аватарии.",
     "advice": "вместо предсказания дай один хитрый и полезный совет на сегодня в аватарии про этот факт, с легкой шуткой. начни со слов «мой совет:».",
     "horoscope": "подай предсказание как гороскоп: созвездие назови по предмету из факта (например «созвездие Телескопа»), и в одной фразе скажи, что оно сулит.",
     "rhyme": "напиши предсказание двумя короткими строчками в рифму. простые слова, смысл важнее рифмы.",
