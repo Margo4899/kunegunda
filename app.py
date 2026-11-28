@@ -1899,22 +1899,27 @@ def give_gift(peer_id, forced_user=None):
     story = generate_ai_response(SYSTEM_PROMPT_BASE + f"""
         ты раз в три дня даришь одному участнику беседы волшебный артефакт. сегодня шар выбрал этого человека.
         артефакт: {a['name']} — это {a['story']}.
-        торжественно и смешно объясни, почему шар выбрал именно этого человека (придумай забавную причину), и вручи артефакт.
-        что дает артефакт, не пересказывай и не придумывай другие свойства, это напишут отдельно.
-        сам артефакт по названию не называй (название уже есть в заголовке), говори «эта вещица» или «этот артефакт». настроение: {tone}.
-        2 коротких предложения, обращение на ты, имя не пиши.
+        одним коротким предложением (до 15 слов) скажи, за что шар выбрал именно этого человека: придумай неожиданную смешную причину.
+        что дает артефакт, не пересказывай и не придумывай другие свойства. сам артефакт по названию не называй. настроение: {tone}.
+        обращение на ты, имя не пиши.
         пиши без рода: не используй слова, по которым видно, парень это или девушка (никаких «получил/получила», «рад/рада», «милый/милая»).
-        """, "вручи дар.", max_sentences=2, max_chars=260, names=(name, last_name))
+        """, "за что шар выбрал этого человека?", max_sentences=1, max_chars=140, names=(name, last_name))
     save_gift(peer_id, winner, artifact)
     who = mention(winner, "@" + get_screen_name(winner))
     text = (f"🎁✨ ДАР КУНЕГУНДЫ ✨🎁\n\n"
             f"{who}, шар выбрал тебя! тебе достается {a['name']} на 3 дня.\n\n"
-            f"{story}\n\n"
+            f"🔮 {story}\n\n"
             f"✨ что дает: {a['effect']}\n"
             f"👉 {GIFT_HOW_TO[a['code']]}\n\n"
             f"{GIFT_RULES_TEXT}")
     print(f"🎁 [ДАРЫ] Беседа {peer_id}: {winner} получает {artifact}")
     send_with_photo(peer_id, text, upload_card(peer_id, artifact))
+
+GIFT_LAUNCH_DATE = "2026-11-28"   # первая настоящая раздача вечером этого дня
+GIFT_INTRO_TEXT = ("✨ у меня появилась новая способность!\n\n"
+                   "раз в 3 дня вечером шар будет выбирать одного из вас, и я буду дарить ему волшебный артефакт на 3 дня. "
+                   "у каждого артефакта своя сила, а какой достанется, решает судьба.\n\n"
+                   "первый дар — прямо сейчас 👀")
 
 def gift_loop():
     """Раз в 15 минут смотрим, не пора ли вручить дар."""
@@ -1922,12 +1927,15 @@ def gift_loop():
     while True:
         try:
             hour = msk_now().hour
-            if GIFT_HOURS_MSK[0] <= hour < GIFT_HOURS_MSK[1]:
+            if msk_now().strftime("%Y-%m-%d") >= GIFT_LAUNCH_DATE and GIFT_HOURS_MSK[0] <= hour < GIFT_HOURS_MSK[1]:
                 for peer in known_peers():
                     last = gifts_of(peer_id=peer)
                     last_dt = _parse_dt(last[0]["given_at"]) if last else None
                     if not last_dt or datetime.now(timezone.utc) - last_dt >= timedelta(days=GIFT_EVERY_DAYS) - timedelta(hours=2):
                         if len(active_users(peer)) >= 2:
+                            if not last:
+                                send_vk_message(peer, GIFT_INTRO_TEXT)
+                                time.sleep(5)
                             give_gift(peer)
         except Exception as e:
             print(f"⚠️ [ДАРЫ] Ошибка в цикле даров: {e}")
