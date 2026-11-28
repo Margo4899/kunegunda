@@ -1447,7 +1447,8 @@ def handle_love(peer_id, from_id, cmid):
         partner_tag = pname if npc else mention(pid, pname or 'кто-то')
         text = f"💘 пара дня: {mention(from_id, name or 'ты')} + {partner_tag}\n{reply}"
     if "love_match" in love_codes:
-        text += f"\n💞 совместимость: {random.randint(42, 100)}%"
+        pair = sorted([from_id, pid or hash(pname)])
+        text += f"\n💞 совместимость: {day_rng(pair[0], pair[1], 'match').randint(42, 100)}%"
     if "love_match" in love_codes:
         text += f"\n🎯 задание для пары: {random.choice(LOVE_QUESTS)}"
     if not (placeholder_cmid and edit_vk_message(peer_id, placeholder_cmid, text)):
@@ -2026,7 +2027,6 @@ GIFT_PROMPT_RULES = {
     "horoscope": "подай предсказание как гороскоп по звездам аватарии: придумай смешное созвездие и что оно сулит.",
     "fairytale": "расскажи предсказание как маленькую сказку, начни словами «жили-были в аватарии».",
     "rhyme": "напиши предсказание в рифму, двумя короткими рифмованными строчками.",
-    "prophecy": "в конце добавь короткое бонусное пророчество на завтра, начни его словами «а завтра».",
 }
 
 LUCKY_STONES = [("аметист", "бережет от лагов и вылетов"), ("янтарь", "притягивает золотые монеты"),
@@ -2040,6 +2040,24 @@ DECREE_FALLBACK = ["всем сегодня ставить реакции на �
                    "каждый пусть сделает комплимент соседу по беседе", "запрещено грустить до полуночи по МСК"]
 EMOJI_POOL = "🔮🍀🌙⭐️💎🎁🦜🌶️👑🎲🃏🕯☕️🌈🔥💘"
 
+def day_rng(*key):
+    """Случайность, которая одинакова весь день для одного и того же (человек, артефакт)."""
+    return random.Random("|".join(str(k) for k in key) + "|" + msk_now().strftime("%Y-%m-%d"))
+
+_prophecy_cache = {}   # (user_id, день) -> пророчество на завтра (одно на весь день)
+
+def day_prophecy(user_id):
+    key = (user_id, msk_now().strftime("%Y-%m-%d"))
+    if key not in _prophecy_cache:
+        text = generate_ai_response(SYSTEM_PROMPT_BASE + """
+            придумай одно короткое пророчество на завтра для игрока аватарии, до 15 слов, про игру (место, событие, мини-игру).
+            начни словами «а завтра». понятно и с легкой улыбкой, без обращения по имени.""", "пророчество на завтра",
+            max_sentences=1, max_chars=140)
+        if not text or "завтра" not in text.lower():
+            text = day_rng(user_id, "prophecy").choice(PROPHECY_FALLBACK)
+        _prophecy_cache[key] = text
+    return _prophecy_cache[key]
+
 def apply_gift_extras(reply, codes, peer_id, from_id, sex, gossip_name=None):
     """То, что дар гарантирует сам бот (не надеясь на нейросеть)."""
     if "royal" in codes:
@@ -2048,22 +2066,23 @@ def apply_gift_extras(reply, codes, peer_id, from_id, sex, gossip_name=None):
         body = re.sub(r"^\[id\d+\|[^\]]*\],?\s*", "", reply.strip())
         if not body or ord(body[0]) < 0x2190:      # нейросеть не начала с эмодзи: добавляем шифр сами
             reply = "".join(random.sample(EMOJI_POOL, 4)) + " " + reply
-    if "prophecy" in codes and "завтра" not in reply.lower():
-        reply += "\n🔮 " + random.choice(PROPHECY_FALLBACK)
+    if "prophecy" in codes:
+        reply += "\n🔮 пророчество на завтра (одно на весь день): " + day_prophecy(from_id)
     if "gossip" in codes and gossip_name and gossip_name[0].lower()[:3] not in reply.lower():
         verb = "задумала" if gossip_name[1] == "f" else "задумал"
         reply += f"\n🦜 попугай шепчет, что {gossip_name[0]} сегодня что-то {verb} в аватарии..."
     if "luck_percent" in codes:
-        reply += f"\n🧪 твой процент удачи на сегодня: {random.randint(60, 100)}%"
+        reply += f"\n🧪 твой процент удачи на сегодня: {day_rng(from_id, 'luck').randint(60, 100)}%"
     if "lucky_number" in codes:
-        reply += f"\n🍀 твое счастливое число на сегодня: {random.randint(1, 99)}"
+        reply += f"\n🍀 твое счастливое число на сегодня: {day_rng(from_id, 'number').randint(1, 99)}"
     if "talisman" in codes:
-        stone, why = random.choice(LUCKY_STONES)
+        stone, why = day_rng(from_id, "stone").choice(LUCKY_STONES)
         reply += f"\n💎 камень-оберег дня: {stone}, {why}"
     if "admirer" in codes:
         others = [m for m in get_chat_members(peer_id) if m[0] != from_id] if peer_id and peer_id > 2000000000 else []
         if others:
-            reply += f"\n💌 фонарь душ показывает, что сегодня о тебе думает {random.choice(others)[1]}"
+            others.sort(key=lambda m: m[0])
+            reply += f"\n💌 фонарь душ показывает, что сегодня о тебе думает {day_rng(from_id, 'admirer').choice(others)[1]}"
     if False:
         decree = generate_ai_response(SYSTEM_PROMPT_BASE + """
             придумай один короткий смешной королевский указ для всей беседы клуба по аватарии от имени игрока с короной.
