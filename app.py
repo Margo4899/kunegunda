@@ -1826,7 +1826,21 @@ def active_artifacts(user_id):
     return [g["artifact"] for g in gifts_of(user_id=user_id)
             if (_parse_dt(g.get("expires_at")) or now) > now]
 
+def end_active_gifts(peer_id):
+    """В беседе одновременно действует только один дар: старый заканчивается, когда вручают новый."""
+    now = datetime.now(timezone.utc)
+    for g in _gifts_mem:
+        if g["peer_id"] == peer_id and (_parse_dt(g.get("expires_at")) or now) > now:
+            g["expires_at"] = _iso(now)
+    if supabase:
+        try:
+            supabase.table("kunegunda_gifts").update({"expires_at": _iso(now)}) \
+                .eq("peer_id", peer_id).gt("expires_at", _iso(now)).execute()
+        except Exception as e:
+            print(f"⚠️ [ДАРЫ] Не закрыла прошлый дар: {e}")
+
 def save_gift(peer_id, user_id, artifact):
+    end_active_gifts(peer_id)
     now = datetime.now(timezone.utc)
     row = {"peer_id": peer_id, "user_id": user_id, "artifact": artifact,
            "given_at": _iso(now), "expires_at": _iso(now + timedelta(days=GIFT_EVERY_DAYS))}
@@ -1837,20 +1851,27 @@ def save_gift(peer_id, user_id, artifact):
         except Exception as e:
             print(f"⚠️ [ДАРЫ] Не сохранила дар в базу: {e}")
 
+_card_cache = {}   # (peer_id, artifact) -> загруженная картинка, чтобы не грузить заново
+
 def upload_card(peer_id, artifact):
+    if (peer_id, artifact) in _card_cache:
+        return _card_cache[(peer_id, artifact)]
     a = ARTIFACTS[artifact]
-    path = f"/tmp/gift_{artifact}.png"
-    try:
-        with open(path, "wb") as f:
-            f.write(card_bytes(artifact, a["name"], a["effect"]))
-        server = vk_api_call("photos.getMessagesUploadServer", peer_id=peer_id)
-        with open(path, "rb") as f:
-            up = requests.post(server["upload_url"], files={"photo": ("gift.png", f.read(), "image/png")}, timeout=60).json()
-        saved = vk_api_call("photos.saveMessagesPhoto", photo=up["photo"], server=up["server"], hash=up["hash"])[0]
-        return f"photo{saved['owner_id']}_{saved['id']}"
-    except Exception as e:
-        print(f"⚠️ [ДАРЫ] Картинка дара не загрузилась: {e}")
-        return None
+    data = card_bytes(artifact, a["name"], a["effect"])
+    for attempt in range(3):
+        try:
+            server = vk_api_call("photos.getMessagesUploadServer", peer_id=peer_id)
+            up = requests.post(server["upload_url"], files={"photo": ("gift.jpg", data, "image/jpeg")}, timeout=60).json()
+            if not up.get("photo") or up.get("photo") == "[]":
+                raise RuntimeError(f"ВК не принял картинку: {str(up)[:120]}")
+            saved = vk_api_call("photos.saveMessagesPhoto", photo=up["photo"], server=up["server"], hash=up["hash"])[0]
+            att = f"photo{saved['owner_id']}_{saved['id']}"
+            _card_cache[(peer_id, artifact)] = att
+            return att
+        except Exception as e:
+            print(f"⚠️ [ДАРЫ] Картинка дара не загрузилась (попытка {attempt + 1}): {e}")
+            time.sleep(2 + attempt * 2)
+    return None
 
 def send_with_photo(peer_id, text, attachment=None):
     if not attachment:
