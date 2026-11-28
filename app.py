@@ -1910,8 +1910,14 @@ def pick_gift_winner(peer_id, prev_gifts):
 def give_gift(peer_id, forced_user=None):
     """Церемония дара для всей беседы."""
     prev = gifts_of(peer_id=peer_id)
-    recent = {g["artifact"] for g in prev[:6]}           # недавние артефакты не повторяем
-    pool = [k for k in ARTIFACTS if k not in recent] or list(ARTIFACTS)
+    # Колода: артефакт не повторяется, пока не выпадут все остальные
+    used = set()
+    for g in reversed(prev):                             # от старых к новым
+        if g["artifact"] in ARTIFACTS:
+            used.add(g["artifact"])
+            if len(used) == len(ARTIFACTS):
+                used = set()                             # колода закончилась, начинаем новый круг
+    pool = [k for k in ARTIFACTS if k not in used] or list(ARTIFACTS)
     artifact = random.choices(pool, weights=[GIFT_RARE_CODES.get(ARTIFACTS[k]["code"], 1.0) for k in pool])[0]
     a = ARTIFACTS[artifact]
     tone = pick_tone(friendly_only=True)
