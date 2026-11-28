@@ -1999,6 +1999,11 @@ def handle_gifts_command(peer_id, from_id, text, cmid):
     if t.startswith("!вручить дар") and is_admin(from_id):
         give_gift(peer_id)
         return True
+    if t.startswith("!запустить дары") and is_admin(from_id):
+        send_vk_message(peer_id, GIFT_INTRO_TEXT)
+        time.sleep(4)
+        give_gift(peer_id)
+        return True
     return False
 
 GIFT_PROMPT_RULES = {
